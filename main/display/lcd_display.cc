@@ -2,6 +2,7 @@
 #include "assets/lang_config.h"
 #include "gif/lvgl_gif.h"
 #include "lvgl_theme.h"
+#include "my_custom_app.h"
 #include "settings.h"
 
 #include <esp_err.h>
@@ -1045,6 +1046,10 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_text_color(low_battery_label_, lv_color_white(), 0);
     lv_obj_center(low_battery_label_);
     lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
+
+    // Buddy edit: Add a call to CustomApp_InitUI() to allow custom app to initialize its UI
+    // elements
+    CustomApp_InitUI(lv_scr_act());
 }
 
 void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
@@ -1084,6 +1089,9 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
 }
 
 void LcdDisplay::SetChatMessage(const char* role, const char* content) {
+    // buddy edit：將對話內容傳給自訂應用程式檢查跳轉指令
+    CustomApp_OnChatMessage(role, content);
+
     if (!setup_ui_called_) {
         ESP_LOGW(TAG, "SetChatMessage('%s', '%s') called before SetupUI() - message will be lost!",
                  role, content);
@@ -1129,6 +1137,7 @@ void LcdDisplay::ClearChatMessages() {
 }
 #endif
 
+/*
 void LcdDisplay::SetEmotion(const char* emotion) {
     if (!setup_ui_called_) {
         ESP_LOGW(TAG, "SetEmotion('%s') called before SetupUI() - emotion will not be displayed!",
@@ -1215,6 +1224,19 @@ void LcdDisplay::SetEmotion(const char* emotion) {
         lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
     }
 #endif
+}
+*/
+
+// Buddy edit: Add a new SetEmotion function that delegates to the custom app module
+void LcdDisplay::SetEmotion(const char* emotion) {
+    DisplayLockGuard lock(this);
+    if (emoji_image_ != nullptr)
+        lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+    if (emoji_label_ != nullptr)
+        lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+
+    // 把工作交給我們的模組
+    CustomApp_SetEmotion(emotion);
 }
 
 void LcdDisplay::SetTheme(Theme* theme) {

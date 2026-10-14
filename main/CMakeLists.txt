@@ -17,6 +17,7 @@ set(SOURCES "audio/audio_codec.cc"
             "display/display.cc"
             "display/text_glyph.cc"
             "display/lcd_display.cc"
+            "my_custom_app.cc"
             "display/oled_display.cc"
             "display/lvgl_display/lvgl_display.cc"
             "display/emote_display.cc"
@@ -1107,6 +1108,8 @@ idf_component_register(SRCS ${SOURCES}
                         esp_driver_ppa
                         esp_driver_tsens
                         esp_app_format
+                        esp_http_client
+                        cjson
                         app_update
                         spi_flash
                         mbedtls

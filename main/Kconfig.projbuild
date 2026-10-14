@@ -35,7 +35,7 @@ config CUSTOM_ASSETS_FILE
 
 choice
     prompt "Default Language"
-    default LANGUAGE_ZH_CN
+    default LANGUAGE_ZH_TW
     help
         Select device display language
 
@@ -1123,7 +1123,7 @@ menu "TAIJIPAI_S3_CONFIG"
         prompt "taiji-pi-S3 I2S Type"
         default TAIJIPAI_I2S_TYPE_STD
         help
-            I2S 类型选择
+            I2S 類型選擇
         config TAIJIPAI_I2S_TYPE_STD
             bool "I2S Type STD"
         config TAIJIPAI_I2S_TYPE_PDM
@@ -1134,7 +1134,7 @@ menu "TAIJIPAI_S3_CONFIG"
     bool "Enable I2S 2 Slot"
     default y
     help
-        启动双声道
+        啓動雙聲道
 endmenu
 
 endmenu
