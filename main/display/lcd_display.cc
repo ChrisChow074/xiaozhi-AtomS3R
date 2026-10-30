@@ -1362,6 +1362,7 @@ void LcdDisplay::SetTheme(Theme* theme) {
 #else
     // Simple UI mode - just update the main chat message
     if (chat_message_label_ != nullptr) {
+        lv_obj_set_style_text_font(chat_message_label_, text_font, 0);
         lv_obj_set_style_text_color(chat_message_label_, lvgl_theme->text_color(), 0);
     }
 
@@ -1371,6 +1372,9 @@ void LcdDisplay::SetTheme(Theme* theme) {
 
     // Update bottom bar background color with 50% opacity
     if (bottom_bar_ != nullptr) {
+        // 【關鍵新增 2】：根據新字體的高度，動態撐大底部欄位！
+        lv_obj_set_height(bottom_bar_, text_font->line_height + lvgl_theme->spacing(8));
+
         lv_obj_set_style_bg_opa(bottom_bar_, LV_OPA_50, 0);
         lv_obj_set_style_bg_color(bottom_bar_, lvgl_theme->background_color(), 0);
     }
