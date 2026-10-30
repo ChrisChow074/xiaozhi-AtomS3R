@@ -18,9 +18,9 @@ set(SOURCES "audio/audio_codec.cc"
             "display/text_glyph.cc"
             "display/lcd_display.cc"
             "my_custom_app.cc"
-            "weather_70.c"
-            "micro5_65.c"
-            "slot_36.c"
+            "weather_110.c"
+            "micro5_120.c"
+            "slot.c"
             "display/oled_display.cc"
             "display/lvgl_display/lvgl_display.cc"
             "display/emote_display.cc"
@@ -250,8 +250,8 @@ elseif(CONFIG_BOARD_TYPE_M5STACK_CORE_S3)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
 elseif(CONFIG_BOARD_TYPE_M5STACK_STICK_S3)
     set(BOARD_DIR "m5stack/stick-s3")
-    set(BUILTIN_TEXT_FONT font_noto_sans_basic_16_4)
-    set(BUILTIN_ICON_FONT font_material_symbols_16_4)
+    set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
+    set(BUILTIN_ICON_FONT font_material_symbols_20_4)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
 elseif(CONFIG_BOARD_TYPE_M5STACK_CORE_TAB5)
     set(BOARD_DIR "m5stack/tab5")
