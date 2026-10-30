@@ -4756,7 +4756,8 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // avatar_theme_color = lv_obj_get_style_text_color(parent, LV_PART_MAIN);   // 黑色
     // lv_obj_set_style_text_color(parent, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
-    avatar_theme_color = lv_color_make(100, 0, 255);
+    // avatar_theme_color = lv_color_make(100, 0, 255); // blue
+    avatar_theme_color = lv_color_make(255, 100, 0);  // orange
 
     // ==============================================
     // 【新增】建立一個臉部總容器，用來做重力跟隨移動
