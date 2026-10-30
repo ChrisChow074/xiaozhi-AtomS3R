@@ -6,7 +6,6 @@ dist/
 .vscode/
 .devcontainer/
 sdkconfig.old
-sdkconfig
 dependencies.lock
 .env
 releases/
@@ -15,6 +14,5 @@ main/mmap_generate_emoji.h
 .DS_Store
 .cache
 *.pyc
-*.bin
 mmap_generate_*.h
 .clangd
