@@ -5642,7 +5642,7 @@ void CustomApp_SetEmotion(const char* emotion) {
         }
     } else if (emo_str == "confused") {
         // 無奈表情：左眼變扁、右眼縮小，嘴巴變成一條扁平橫線
-        set_eye_size(EYE_BASE_W + 6, 10);
+        set_eye_size(EYE_BASE_W + 6, 8);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 1);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 1);
         lv_obj_set_size(avatar_mouth, MOUTH_BASE_W + 6, MOUTH_BASE_H);  // 扁嘴
@@ -5733,6 +5733,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W, 8);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_size(avatar_mouth, 2, 2);
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
 
