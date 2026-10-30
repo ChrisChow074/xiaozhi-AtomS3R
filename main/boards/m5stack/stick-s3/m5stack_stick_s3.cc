@@ -1,34 +1,37 @@
-#include "wifi_board.h"
-#include "codecs/es8311_audio_codec.h"
-#include "display/lcd_display.h"
 #include "application.h"
 #include "button.h"
+#include "codecs/es8311_audio_codec.h"
 #include "config.h"
+#include "display/lcd_display.h"
 #include "i2c_device.h"
-#include "assets/lang_config.h"
-#include "backlight.h"
-#include "settings.h"
+#include "wifi_board.h"
+// buddy edit
 #include <driver/i2c_master.h>
-#include <esp_lcd_panel_vendor.h>
+#include <driver/spi_common.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
-#include <driver/spi_common.h>
+#include <esp_lcd_panel_vendor.h>
 #include <esp_log.h>
-#include <wifi_manager.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <wifi_manager.h>
 #include "M5PM1.h"
+#include "assets/lang_config.h"
+#include "backlight.h"
+#include "my_custom_app.h"
+#include "settings.h"
 
 #define TAG "M5StackStickS3"
 
 // reduce the output volume to 60%
 class Sticks3AudioCodec : public Es8311AudioCodec {
 public:
-    Sticks3AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port, int input_sample_rate, int output_sample_rate,
-        gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din,
-        gpio_num_t pa_pin, uint8_t es8311_addr, bool use_mclk = true, bool pa_inverted = false)
-        : Es8311AudioCodec(i2c_master_handle, i2c_port, input_sample_rate, output_sample_rate,
-                          mclk, bclk, ws, dout, din, pa_pin, es8311_addr, use_mclk, pa_inverted) {}
+    Sticks3AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port, int input_sample_rate,
+                      int output_sample_rate, gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws,
+                      gpio_num_t dout, gpio_num_t din, gpio_num_t pa_pin, uint8_t es8311_addr,
+                      bool use_mclk = true, bool pa_inverted = false)
+        : Es8311AudioCodec(i2c_master_handle, i2c_port, input_sample_rate, output_sample_rate, mclk,
+                           bclk, ws, dout, din, pa_pin, es8311_addr, use_mclk, pa_inverted) {}
 
     virtual void SetOutputVolume(int volume) override {
         if (volume > 100) {
@@ -39,8 +42,9 @@ public:
         }
 
         // Scale volume to 60% (x 0.6)
-        int scaled_volume = (int)(volume * 0.6f + 0.5f); // Round to nearest integer
-        ESP_LOGI(TAG, "Requested output volume: %d%%, scaled to hardware: %d%%", volume, scaled_volume);
+        int scaled_volume = (int)(volume * 0.6f + 0.5f);  // Round to nearest integer
+        ESP_LOGI(TAG, "Requested output volume: %d%%, scaled to hardware: %d%%", volume,
+                 scaled_volume);
 
         // Call parent's SetOutputVolume with scaled value for hardware
         Es8311AudioCodec::SetOutputVolume(scaled_volume);
@@ -72,9 +76,10 @@ private:
             .glitch_ignore_cnt = 7,
             .intr_priority = 0,
             .trans_queue_depth = 0,
-            .flags = {
-                .enable_internal_pullup = 1,
-            },
+            .flags =
+                {
+                    .enable_internal_pullup = 1,
+                },
         };
         ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_));
     }
@@ -146,44 +151,67 @@ private:
         esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
         esp_lcd_panel_disp_on_off(panel, true);
 
-        display_ = new SpiLcdDisplay(panel_io, panel,
-                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-                                     DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        display_ = new SpiLcdDisplay(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                     DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X,
+                                     DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
     void InitializeButtons() {
+        /*
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateStarting && !WifiManager::GetInstance().IsConnected()) {
+            if (app.GetDeviceState() == kDeviceStateStarting &&
+                !WifiManager::GetInstance().IsConnected()) {
                 EnterWifiConfigMode();
             }
             app.ToggleChatState();
         });
+        */
+        // CustomApp_ProvideI2CBus(i2c_bus_);
+        CustomApp_ProvideI2CBus(i2c_bus_);
 
-        // User button on GPIO12: single click sets stored volume to 70%
-        user_button_.OnClick([this]() {
-            AudioCodec* codec = GetAudioCodec();
-            if (codec) {
-                // Use base AudioCodec::SetOutputVolume to update stored value
-                // without touching hardware that may not be initialized yet.
-                codec->SetOutputVolume(60);
-                codec->AudioCodec::SetOutputVolume(60);
-                ESP_LOGI(TAG, "User button pressed: stored volume set to 80%%");
-            } else {
-                ESP_LOGW(TAG, "User button pressed but codec is not available yet");
-            }
-        });
+        CustomApp_HijackButtons(
+            boot_button_,
+            // 傳入原本的單擊行為
+            [this]() {
+                auto& app = Application::GetInstance();
+                if (app.GetDeviceState() == kDeviceStateStarting) {
+                    EnterWifiConfigMode();
+                    return;
+                }
+                app.ToggleChatState();
+            },
+            // 傳入原本的長按行為
+            [this]() {
+                // 原廠沒有長按，我們留白或供未來擴充
+            });
+
+        /*
+    // User button on GPIO12: single click sets stored volume to 70%
+    user_button_.OnClick([this]() {
+        AudioCodec* codec = GetAudioCodec();
+        if (codec) {
+            // Use base AudioCodec::SetOutputVolume to update stored value
+            // without touching hardware that may not be initialized yet.
+            codec->SetOutputVolume(60);
+            codec->AudioCodec::SetOutputVolume(60);
+            ESP_LOGI(TAG, "User button pressed: stored volume set to 80%%");
+        } else {
+            ESP_LOGW(TAG, "User button pressed but codec is not available yet");
+        }
+    });*/
+        CustomApp_HijackSideButton(user_button_);
     }
 
 public:
-    M5StackStickS3Board() :
-        boot_button_(BOOT_BUTTON_GPIO),
-        user_button_(USER_BUTTON_GPIO),
-        display_(nullptr),
-        i2c_bus_(nullptr),
-        pmic_(nullptr) {
+    M5StackStickS3Board()
+        : boot_button_(BOOT_BUTTON_GPIO),
+          user_button_(USER_BUTTON_GPIO),
+          display_(nullptr),
+          i2c_bus_(nullptr),
+          pmic_(nullptr) {
         InitializeI2c();
-        InitializePm1(); // Initialize PM1 after I2C, before LCD/Audio
+        InitializePm1();  // Initialize PM1 after I2C, before LCD/Audio
         InitializeSpi();
         InitializeLcdDisplay();
         InitializeButtons();
@@ -192,31 +220,22 @@ public:
 
     virtual AudioCodec* GetAudioCodec() override {
         static Sticks3AudioCodec audio_codec(
-            i2c_bus_,
-            I2C_NUM_0,
-            AUDIO_INPUT_SAMPLE_RATE,
-            AUDIO_OUTPUT_SAMPLE_RATE,
-            AUDIO_I2S_GPIO_MCLK,
-            AUDIO_I2S_GPIO_BCLK,
-            AUDIO_I2S_GPIO_WS,
-            AUDIO_I2S_GPIO_DOUT,
+            i2c_bus_, I2C_NUM_0, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
+            AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT,
             AUDIO_I2S_GPIO_DIN,
-            AUDIO_CODEC_GPIO_PA, // Not used, PA controlled by PM1_G3
-            AUDIO_CODEC_ES8311_ADDR,
-            false);
+            AUDIO_CODEC_GPIO_PA,  // Not used, PA controlled by PM1_G3
+            AUDIO_CODEC_ES8311_ADDR, false);
         return &audio_codec;
     }
 
-    virtual Display* GetDisplay() override {
-        return display_;
-    }
+    virtual Display* GetDisplay() override { return display_; }
 
     virtual Backlight* GetBacklight() override {
         static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
         return &backlight;
     }
 
-    virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging) override {
+    virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
         if (!pmic_) {
             return false;
         }
@@ -245,10 +264,12 @@ public:
         } else if (voltage_mv > BATTERY_MAX_VOLTAGE) {
             level = 100;
         } else {
-            level = ((voltage_mv - BATTERY_MIN_VOLTAGE) * 100) / (BATTERY_MAX_VOLTAGE - BATTERY_MIN_VOLTAGE);
+            level = ((voltage_mv - BATTERY_MIN_VOLTAGE) * 100) /
+                    (BATTERY_MAX_VOLTAGE - BATTERY_MIN_VOLTAGE);
         }
 
-        ESP_LOGD(TAG, "Battery: %d%% (%dmV), Charging: %s", level, voltage_mv, charging ? "Yes" : "No");
+        ESP_LOGD(TAG, "Battery: %d%% (%dmV), Charging: %s", level, voltage_mv,
+                 charging ? "Yes" : "No");
         return true;
     }
 };
