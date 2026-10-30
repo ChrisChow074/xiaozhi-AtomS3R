@@ -1089,6 +1089,9 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
 }
 
 void LcdDisplay::SetChatMessage(const char* role, const char* content) {
+    // buddy edit：將對話內容傳給自訂應用程式檢查跳轉指令
+    CustomApp_OnChatMessage(role, content);
+
     if (!setup_ui_called_) {
         ESP_LOGW(TAG, "SetChatMessage('%s', '%s') called before SetupUI() - message will be lost!",
                  role, content);
