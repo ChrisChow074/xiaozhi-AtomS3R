@@ -5729,23 +5729,6 @@ void CustomApp_SetEmotion(const char* emotion) {
         if (avatar_sweat) {
             lv_obj_remove_flag(avatar_sweat, LV_OBJ_FLAG_HIDDEN);
         }
-    } else if (emo_str == "happy") {
-        set_eye_size(EYE_BASE_W, 8);
-        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
-        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
-        if (left_eye_highlight)
-            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_highlight)
-            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_size(avatar_mouth, 2, 2);
-        lv_obj_set_style_radius(avatar_mouth, 8, 0);
-
-        if (avatar_embrassing) {
-            lv_obj_remove_flag(avatar_embrassing, LV_OBJ_FLAG_HIDDEN);
-        }
-        if (avatar_mouth_happy) {
-            lv_obj_remove_flag(avatar_mouth_happy, LV_OBJ_FLAG_HIDDEN);
-        }
     } else if (emo_str == "silly") {
         lv_obj_set_size(avatar_left_eye, EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_size(avatar_right_eye, EYE_BASE_W, EYE_BASE_W);
@@ -5754,6 +5737,22 @@ void CustomApp_SetEmotion(const char* emotion) {
         }
         lv_obj_set_size(avatar_mouth, MOUTH_BASE_W + 4, MOUTH_BASE_H);
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
+    } else if (emo_str == "happy") {
+        set_eye_size(EYE_BASE_W, 8);
+        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
+        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_size(avatar_mouth, 1, 1);
+
+        if (avatar_embrassing) {
+            lv_obj_remove_flag(avatar_embrassing, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (avatar_mouth_happy) {
+            lv_obj_remove_flag(avatar_mouth_happy, LV_OBJ_FLAG_HIDDEN);
+        }
     } else if (emo_str == "laughing") {
         set_eye_size(EYE_BASE_W, 8);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
@@ -5776,8 +5775,6 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
             lv_anim_start(&a);
         }
-        // if (avatar_mouth_laugh) { lv_obj_remove_flag(avatar_mouth_laugh, LV_OBJ_FLAG_HIDDEN);
-        // }
     } else if (emo_str == "cool") {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_size(avatar_mouth, 3, 3);
