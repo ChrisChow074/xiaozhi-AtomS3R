@@ -23,29 +23,70 @@
 
 // static const char* TAG = "MyCustomApp";
 
-// --- 時鐘待機模式物件 ---
-static lv_obj_t* bg_clock = nullptr;
-static lv_obj_t* clock_time_label = nullptr;
-static lv_obj_t* clock_date_label = nullptr;
+// ==========================================
+// 天氣模式專屬變數
+// ==========================================
+LV_FONT_DECLARE(micro5_65);
+
+// 1. 時間模式變數
+static lv_obj_t* bg_time_mode = nullptr;
+static lv_obj_t* time_mode_time_label = nullptr;
+static lv_obj_t* time_mode_date_label = nullptr;
+
+// 2. 天氣模式變數
+static lv_obj_t* bg_weather_mode = nullptr;
+static lv_obj_t* weather_icon_container = nullptr;
+static lv_obj_t* weather_current_label = nullptr;
+static lv_obj_t* weather_hilo_label = nullptr;
+
+static char last_drawn_weather[32] = "";  // 紀錄上次畫的天氣，避免每秒重複繪製導致閃爍
+
 // 控制時鐘亮暗與 5 秒自動倒數
 static bool clock_is_bright = false;  // 目前是否為高亮狀態
 static int clock_dim_countdown = 0;   // 倒數計時器 (每 100ms 扣 1)
 const int CLOCK_DIM_TIMEOUT_SEC = 5;  // 亮起後等待幾秒自動變暗 (可自行改成 3 或 5 秒)
 
 #define EYE_BASE_W 22  // 眼睛基準寬度 (想放大改這裡即可，例如改 24)
-#define EYE_BASE_H 30  // 眼睛基準高度 (想放大改這裡即可，例如改 24)
+#define EYE_BASE_H 28  // 眼睛基準高度 (想放大改這裡即可，例如改 24)
 #define EYE_POS_L -30
 #define EYE_POS_R 30
-#define EYE_POS_H -6
-#define MOUTH_BASE_W 28
+#define EYE_POS_H -8
+#define EYE_CORNER 10  // (LV_RADIUS_CIRCLE)
+#define MOUTH_BASE_W 26
 #define MOUTH_BASE_H 8
 #define MOUTH_POS_H 12
+
+#define BRIGHTNESS_DIM 10
 
 // ==========================================
 //           螢幕解析度常數 (M5StickS3)
 // ==========================================
 #define LCD_W 128
 #define LCD_H 128
+
+// ==========================================
+//           老虎機 (Lucky Slot) 系統變數
+// ==========================================
+LV_IMG_DECLARE(slot_36);
+#define SLOT_WIDTH 36
+
+enum SlotState {
+    SLOT_STATE_IDLE,
+    SLOT_STATE_SPINNING,
+    SLOT_STATE_STOP_1,
+    SLOT_STATE_STOP_2,
+    SLOT_STATE_GAMEOVER
+};
+static SlotState slot_game_state = SLOT_STATE_IDLE;
+
+static lv_obj_t* bg_slot = nullptr;
+static lv_obj_t* slot_col[3] = {nullptr};
+static lv_obj_t* slot_img[3] = {nullptr};
+static lv_obj_t* slot_score_label = nullptr;
+static lv_obj_t* slot_status_label = nullptr;
+
+static int slot_results[3] = {0};  // 紀錄三排的最終圖案索引 (0~7)
+static int slot_score = 100;       // 玩家初始金幣
 
 // ==========================================
 //           IMU (BMI270) 全新驅動設定
@@ -69,8 +110,11 @@ void CustomApp_ProvideI2CBus(i2c_master_bus_handle_t bus_handle) { shared_i2c_bu
 
 // --- UI 與狀態變數 ---
 static std::string current_active_emotion = "neutral";
+static lv_obj_t* face_container = nullptr;
 static lv_obj_t* avatar_left_eye = nullptr;
 static lv_obj_t* avatar_right_eye = nullptr;
+static lv_obj_t* left_eye_highlight = nullptr;
+static lv_obj_t* right_eye_highlight = nullptr;
 static void set_eye_size(int width, int height) {
     if (avatar_left_eye)
         lv_obj_set_size(avatar_left_eye, width, height);
@@ -101,13 +145,14 @@ static lv_color_t avatar_theme_bg_color;
 
 static lv_obj_t* game_menu_bg = nullptr;
 static lv_obj_t* game_menu_label = nullptr;
+static lv_obj_t* menu_title_label = nullptr;  // <--- 用來動態改變標題
 
 static DeviceState last_avatar_state = (DeviceState)-1;
 static int idle_to_clock_counter = 0;
+static bool is_tarot_mode = false;
 
 volatile int current_system_mode = 0;  // 0: AI, 1: 遊戲選單, 2: 遊戲中
 volatile int current_ui_mode = 0;
-volatile int game_menu_selection = 0;  // 0: 2048, 1: Snake, 2: Exit
 volatile bool ui_mode_changed = false;
 volatile int pending_game_action = 0;
 volatile int pending_touch_wake = 0;  // 觸摸後的表情展示倒數
@@ -238,6 +283,23 @@ static char bus_t1_str[32] = "";
 static char bus_t2_str[32] = "";
 static int bus_show_countdown = 0;  // 顯示倒數計時器
 
+// ==========================================
+// IMU 獨立背景初始化任務 (防卡死畫面)
+// ==========================================
+static void imu_init_task(void* pvParameters) {
+    // 1. 在背景耐心等待，直到系統把 I2C Bus 交接過來
+    while (shared_i2c_bus == nullptr) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    // 2. 拿到 I2C Bus 後，開始執行初始化 (這裡面的 Delay 就不會卡到畫面了)
+    ESP_LOGI("IMU", "背景任務開始初始化 BMI270...");
+    imu_init();
+
+    // 3. 執行完畢，任務自殺釋放記憶體
+    vTaskDelete(NULL);
+}
+
 // 背景任務：被喚醒後去抓取巴士時間
 static void bus_fetch_task(void* pvParameters) {
     char url[128];
@@ -330,7 +392,7 @@ static void touch_wake_task(void* pvParameters) {
         // 2. 智慧基準值 (Baseline) 自動校準
         if (baseline == 0 && touch_val > 0) {
             baseline = touch_val;
-        } else if (touch_val > 0 && touch_val < baseline + 5000) {
+        } else if (touch_val > 0 && touch_val < baseline + 2000) {
             baseline = (baseline * 19 + touch_val) / 20;
         }
 
@@ -344,20 +406,21 @@ static void touch_wake_task(void* pvParameters) {
         }
 
         // 4. 觸摸判定！
-        if (baseline > 0 && touch_val > baseline + 15000) {
+        if (baseline > 0 && touch_val > baseline + 6000) {
             touch_cooldown = 30;  // 觸發後冷卻 3 秒，防止連觸
 
-            // 5. 模式過濾：只允許在 AI 待機 或 時鐘模式 下喚醒！
-            if (current_system_mode == 0 || current_system_mode == 3) {
+            // 👇 【修復關鍵】：加入 current_system_mode == 6，允許在天氣模式下觸摸喚醒！
+            if (current_system_mode == 0 || current_system_mode == 3 || current_system_mode == 6) {
                 DeviceState state = Application::GetInstance().GetDeviceState();
 
-                // 確保 AI 是安靜待機的狀態
-                if (current_system_mode == 3 || state == kDeviceStateIdle) {
+                // 確保 AI 是安靜待機的狀態，或是正處於時鐘/天氣模式
+                if (current_system_mode == 3 || current_system_mode == 6 ||
+                    state == kDeviceStateIdle) {
                     ESP_LOGI("Touch", "🌟 錫箔紙觸摸喚醒！數值飆升至: %lu",
                              (unsigned long)touch_val);
 
-                    // 如果是在時鐘模式，瞬間切回 AI 臉蛋並點亮螢幕
-                    if (current_system_mode == 3) {
+                    // 如果是在時鐘或天氣模式，瞬間切回 AI 臉蛋並點亮螢幕
+                    if (current_system_mode == 3 || current_system_mode == 6) {
                         auto backlight = Board::GetInstance().GetBacklight();
                         if (backlight)
                             backlight->SetBrightness(100);
@@ -367,7 +430,7 @@ static void touch_wake_task(void* pvParameters) {
                         idle_to_clock_counter = 0;
                     }
 
-                    // 【關鍵改變】：不直接喚醒麥克風，而是設定 1.5 秒倒數計時！
+                    // 設定 1.5 秒倒數計時！
                     pending_touch_wake = 15;
                 }
             }
@@ -378,7 +441,6 @@ static void touch_wake_task(void* pvParameters) {
 // ==========================================
 //           時鐘模式：天氣專屬變數
 // ==========================================
-static lv_obj_t* clock_weather_label = nullptr;
 static int weather_temp_cur = 0;  // 當前即時溫度
 static int weather_temp_max = 0;
 static int weather_temp_min = 0;
@@ -458,35 +520,427 @@ static void weather_update_task(void* pvParameters) {
     }
 }
 
-// --- 獨立的時間刷新函數 ---
-static void update_clock_display() {
-    if (!clock_time_label || !clock_date_label)
-        return;
+LV_FONT_DECLARE(weather_70);
 
+// 幾何圖形天氣繪製引擎
+static void update_weather_icon_ui(const char* desc) {
+    if (!weather_icon_container)
+        return;
+    lv_obj_clean(weather_icon_container);
+
+    // 1. 取得當前時間，判斷是否為白天 (07:00 ~ 18:59)
+    time_t now;
+    struct tm timeinfo;
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    bool is_daytime = (timeinfo.tm_hour >= 7 && timeinfo.tm_hour < 19);
+
+    // 建立一個文字標籤來顯示圖標
+    lv_obj_t* icon_label = lv_label_create(weather_icon_container);
+    // 設定使用你的客製化圖標字型
+    lv_obj_set_style_text_font(icon_label, &weather_70, 0);
+    lv_obj_align(icon_label, LV_ALIGN_CENTER, 0, 0);
+
+    // 根據後端傳來的分類，對應到圖片中的英文字母 (採用線條風格 A-Z)
+    if (strstr(desc, "PartlyCloudy")) {
+        if (is_daytime) {
+            lv_label_set_text(icon_label, "A");  // 太陽 + 雲
+            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xFF9C00), 0);
+        } else {
+            lv_label_set_text(icon_label, "a");                                  // 月亮 + 雲
+            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xCCCCCC), 0);  // 月光與雲的灰白色
+        }
+    } else if (strstr(desc, "Sunny") || strstr(desc, "Clear")) {
+        if (is_daytime) {
+            lv_label_set_text(icon_label, "1");  // 太陽
+            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xFF9C00), 0);
+        } else {
+            lv_label_set_text(icon_label, "6");  // 月亮
+            lv_obj_set_style_text_color(icon_label, lv_color_white(), 0);
+        }
+    } else if (strstr(desc, "Overcast")) {
+        lv_label_set_text(icon_label, "3");  // 兩朵雲 (密雲)
+        lv_obj_set_style_text_color(icon_label, lv_color_hex(0xAAAAAA), 0);
+    } else if (strstr(desc, "Cloudy") || strstr(desc, "Clouds")) {
+        lv_label_set_text(icon_label, "3");  // 單朵雲 (多雲)
+        lv_obj_set_style_text_color(icon_label, lv_color_hex(0xAAAAAA), 0);
+    } else if (strstr(desc, "HeavyRain")) {
+        if (is_daytime) {
+            lv_label_set_text(icon_label, "O");                                  // 雲 + 大雨滴
+            lv_obj_set_style_text_color(icon_label, lv_color_hex(0x0088FF), 0);  // 深藍色
+        } else {
+            lv_label_set_text(icon_label, "o");
+            lv_obj_set_style_text_color(icon_label, lv_color_hex(0x00AAFF), 0);
+        }
+    } else if (strstr(desc, "Rain") || strstr(desc, "Drizzle")) {
+        if (is_daytime) {
+            lv_label_set_text(icon_label, "M");                                  // 雲 + 小雨滴
+            lv_obj_set_style_text_color(icon_label, lv_color_hex(0x0088FF), 0);  // 淺藍色
+        } else {
+            lv_label_set_text(icon_label, "m");                                  // 雲 + 小雨滴
+            lv_obj_set_style_text_color(icon_label, lv_color_hex(0x00AAFF), 0);  // 淺藍色
+        }
+    } else if (strstr(desc, "Storm") || strstr(desc, "Thunder")) {
+        if (is_daytime) {
+            lv_label_set_text(icon_label, "Q");  // 兩朵雲 + 閃電
+            lv_obj_set_style_text_color(icon_label, lv_color_black(), 0);
+        } else {
+            lv_label_set_text(icon_label, "q");
+            lv_obj_set_style_text_color(icon_label, lv_color_white(), 0);
+        }
+    } else if (strstr(desc, "Snow")) {
+        if (is_daytime) {
+            lv_label_set_text(icon_label, "H");  // 雲 + 兩片雪花
+            lv_obj_set_style_text_color(icon_label, lv_color_hex(0x44bbff), 0);
+        } else {
+            lv_label_set_text(icon_label, "i");  // 雲 + 兩片雪花
+            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xc0e0ff), 0);
+        }
+    } else if (strstr(desc, "Fog") || strstr(desc, "Mist") || strstr(desc, "Haze")) {
+        if (is_daytime) {
+            lv_label_set_text(icon_label, "B");  // 橫線 (霧)
+            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xA0B0C0), 0);
+        } else {
+            lv_label_set_text(icon_label, "c");  // 橫線 (霧)
+            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xBBBBBB), 0);
+        }
+    } else if (strstr(desc, "Wind")) {
+        if (is_daytime) {
+            lv_label_set_text(icon_label, "D");  // 吹風線條
+            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xCCCCCC), 0);
+        } else {
+            lv_label_set_text(icon_label, "e");  // 吹風線條
+            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xCCCCCC), 0);
+        }
+    } else {
+        lv_label_set_text(icon_label, "*");  // 未知
+        lv_obj_set_style_text_color(icon_label, lv_color_hex(0xCCCCCC), 0);
+    }
+}
+
+// --- 獨立的時// --- 獨立的時間刷新函數 ---
+static void update_clock_display() {
+    // 獲取當前時間
     time_t now;
     struct tm timeinfo;
     time(&now);
     localtime_r(&now, &timeinfo);
 
+    // ==========================================
+    // 🎨 日夜主題自動切換邏輯
+    // 白天：07:00 ~ 18:59 | 晚上：19:00 ~ 06:59
+    // ==========================================
+    bool is_daytime = (timeinfo.tm_hour >= 7 && timeinfo.tm_hour < 19);
+
+    if (bg_time_mode) {
+        // 設定背景色
+        lv_color_t bg_color = is_daytime ? lv_color_white() : lv_color_black();
+        lv_obj_set_style_bg_color(bg_time_mode, bg_color, 0);
+
+        // 設定字體顏色 (白天黑字，晚上白字)
+        lv_color_t text_primary = is_daytime ? lv_color_black() : lv_color_white();
+        // 日期顏色 (白天深藍色，晚上黃色，增添設計感)
+        lv_color_t text_accent = is_daytime ? lv_color_hex(0x555555) : lv_color_hex(0xCCCCCC);
+        if (time_mode_time_label)
+            lv_obj_set_style_text_color(time_mode_time_label, text_primary, 0);
+        if (time_mode_date_label)
+            lv_obj_set_style_text_color(time_mode_date_label, text_accent, 0);
+    }
+
     char time_str[16];
     char date_str[32];
-    strftime(time_str, sizeof(time_str), "%H:%M", &timeinfo);
-    strftime(date_str, sizeof(date_str), "%m-%d %a", &timeinfo);  // 例如 09-23 Wed
+    // strftime(time_str, sizeof(time_str), "%H:%M", &timeinfo); //24小時制
+    // strftime(time_str, sizeof(time_str), "%I:%M%P", &timeinfo);    // 12小時制有AM/PM
+    strftime(time_str, sizeof(time_str), "%I:%M", &timeinfo);      // 12小時制有AM/PM
+    strftime(date_str, sizeof(date_str), "%m-%d\n%A", &timeinfo);  // 例如 09-23 Wed
+    int len = strlen(time_str);
+    if (len > 0 && (time_str[len - 1] == 'm' || time_str[len - 1] == 'M')) {
+        time_str[len - 1] = '\0';  // 將 'm' 替換 fluid 為字串結束符
+    }
 
-    lv_label_set_text(clock_time_label, time_str);
-    lv_label_set_text(clock_date_label, date_str);
+    if (time_mode_time_label) {
+        lv_label_set_text(time_mode_time_label, time_str);
+    }
+    if (time_mode_date_label) {
+        lv_label_set_text(time_mode_date_label, date_str);
+    }
 
-    // 更新天氣標籤
-    if (clock_weather_label) {
+    if (bg_weather_mode) {
+        // 設定背景色
+        lv_color_t bg_color = is_daytime ? lv_color_white() : lv_color_black();
+        lv_obj_set_style_bg_color(bg_weather_mode, bg_color, 0);
+        lv_color_t weather_text_primary = is_daytime ? lv_color_black() : lv_color_white();
+
+        if (weather_current_label)
+            lv_obj_set_style_text_color(weather_current_label, weather_text_primary, 0);
+        if (weather_hilo_label)
+            lv_obj_set_style_text_color(weather_hilo_label, weather_text_primary, 0);
+    }
+
+    if (weather_current_label && !lv_obj_has_flag(bg_weather_mode, LV_OBJ_FLAG_HIDDEN)) {
+        /*
+        // ==========================================
+        // ⬇️ 測試專用代碼開始 (測試完記得刪除或註解掉)
+        // ==========================================
+        const char* test_weathers[] = {"Sunny", "PartlyCloudy", "Overcast", "Cloudy", "HeavyRain",
+                                       "Rain",  "Storm",        "Snow",     "Fog",    "Wind"};
+        // 根據目前的秒數，每 2 秒切換一個陣列索引 (0~9)
+        int test_idx = (timeinfo.tm_sec / 2) % 10;
+
+        strncpy(weather_desc, test_weathers[test_idx], sizeof(weather_desc) - 1);
+        weather_ready = true;  // 強制讓系統以為資料準備好了
+        // ==========================================
+        // ⬆️ 測試專用代碼結束
+        // ==========================================
+        */
+
         if (weather_ready) {
-            // lv_label_set_text_fmt(clock_weather_label, "%s | H:%d° L:%d°", weather_desc,
-            // weather_temp_max, weather_temp_min);
-            lv_label_set_text_fmt(clock_weather_label, "%s %d°\nH: %d° | L: %d°", weather_desc,
-                                  weather_temp_cur, weather_temp_max, weather_temp_min);
+            // 檢查天氣狀態有沒有變，有變才重新畫幾何圖形 (防閃爍)
+            if (strcmp(last_drawn_weather, weather_desc) != 0) {
+                strncpy(last_drawn_weather, weather_desc, sizeof(last_drawn_weather) - 1);
+                update_weather_icon_ui(weather_desc);
+            }
+
+            // 右上：氣溫與狀態換行
+            lv_label_set_text_fmt(weather_current_label, "%s\n%d°C", weather_desc,
+                                  weather_temp_cur);
+
+            // 右下：最高低溫
+            lv_label_set_text_fmt(weather_hilo_label, "H:%d°C\nL:%d°C", weather_temp_max,
+                                  weather_temp_min);
         } else {
-            lv_label_set_text(clock_weather_label, "Loading\nWeather...");
+            // 如果還在載入中
+            if (strcmp(last_drawn_weather, "Loading") != 0) {
+                strcpy(last_drawn_weather, "Loading");
+                update_weather_icon_ui("Unknown");  // 會畫出問號
+            }
+            lv_label_set_text(weather_current_label, "Loading\nWeather...");
+            lv_label_set_text(weather_hilo_label, "--");
         }
     }
+}
+
+// ==========================================
+// 系統清單對照表 (未來修改順序，只要改這裡就好！)
+// ==========================================
+enum AppIndex {
+    APP_BWA = 0,    // 擲杯
+    APP_MARK6,      // 六合彩
+    APP_LEVEL,      // 新增的水平儀
+    APP_STOPWATCH,  // 碼表
+    APP_TIMER,      // 新增的倒數計時器
+    APP_MAX         // 自動計算總數
+};
+
+enum GameIndex {
+    GAME_SPACE = 0,  // 太空侵略者
+    GAME_SLOT,       // 老虎機
+    GAME_BREAKOUT,   // 打磚塊
+    GAME_2048,       // 2048
+    GAME_SNAKE,      // 貪食蛇
+    GAME_MAX         // 自動計算總數
+};
+
+static int app_menu_selection = APP_BWA;
+static int game_menu_selection = GAME_SPACE;
+
+// ==========================================
+// 水平儀 (Spirit Level) 系統變數
+// ==========================================
+static lv_obj_t* bg_level = nullptr;
+static lv_obj_t* level_target_circle = nullptr;
+static lv_obj_t* inside_circle = nullptr;
+static lv_obj_t* level_bubble = nullptr;
+static lv_obj_t* level_info_label = nullptr;
+
+// ==========================================
+// 倒數計時器 (Timer) 系統變數
+// ==========================================
+enum TimerState { TIMER_IDLE, TIMER_RUNNING, TIMER_PAUSED, TIMER_ALARM };
+static TimerState timer_state = TIMER_IDLE;
+static int64_t timer_total_us = 0;     // 總設定微秒數
+static int64_t timer_remain_us = 0;    // 剩餘微秒數
+static int64_t timer_end_time_us = 0;  // 系統預計結束時間
+static lv_obj_t* bg_timer = nullptr;
+static lv_obj_t* timer_time_label = nullptr;
+static lv_obj_t* timer_ms_label = nullptr;  // 新增：毫秒標籤
+static lv_obj_t* timer_status_label = nullptr;
+
+// ==========================================
+// 碼表 (Stop Watch) 系統變數
+// ==========================================
+enum StopwatchState { SW_IDLE, SW_RUNNING, SW_PAUSED };
+static StopwatchState sw_state = SW_IDLE;
+static int64_t sw_start_time_us = 0;
+static int64_t sw_accumulated_us = 0;
+static lv_obj_t* bg_stopwatch = nullptr;
+static lv_obj_t* sw_time_label = nullptr;
+static lv_obj_t* sw_ms_label = nullptr;  // 毫秒標籤
+static lv_obj_t* sw_status_label = nullptr;
+
+// 1. 輔助函數：解析單個中文數字 (0-9)
+static int get_cn_digit(const std::string& str, size_t pos) {
+    if (pos + 3 > str.length())
+        return -1;  // 避免 UTF-8 越界
+    std::string sub = str.substr(pos, 3);
+    if (sub == "一")
+        return 1;
+    if (sub == "二" || sub == "兩" || sub == "两")
+        return 2;
+    if (sub == "三")
+        return 3;
+    if (sub == "四")
+        return 4;
+    if (sub == "五")
+        return 5;
+    if (sub == "六")
+        return 6;
+    if (sub == "七")
+        return 7;
+    if (sub == "八")
+        return 8;
+    if (sub == "九")
+        return 9;
+    if (sub == "零")
+        return 0;
+    return -1;
+}
+
+// 2. 核心函數：解析「單一區段」內的數字
+static int parse_single_number(const std::string& str) {
+    // A. 阿拉伯數字 (抓取字串中「最後出現」的一組連續數字)
+    int current_num = 0;
+    int final_num = 0;
+    bool has_num = false;
+    for (size_t i = 0; i < str.length(); i++) {
+        char c = str[i];
+        if (c >= '0' && c <= '9') {
+            current_num = current_num * 10 + (c - '0');
+            has_num = true;
+        } else {
+            if (has_num) {
+                final_num = current_num;
+                current_num = 0;
+                has_num = false;
+            }
+        }
+    }
+    if (has_num)
+        final_num = current_num;
+    if (final_num > 0)
+        return final_num;
+
+    // B. 廣東話「廿」、「卅」
+    size_t pos_20 = str.rfind("廿");
+    if (pos_20 != std::string::npos) {
+        int units = 0;
+        int single = get_cn_digit(str, pos_20 + 3);
+        if (single > 0)
+            units = single;
+        return 20 + units;
+    }
+
+    size_t pos_30 = str.rfind("卅");
+    if (pos_30 != std::string::npos) {
+        int units = 0;
+        int single = get_cn_digit(str, pos_30 + 3);
+        if (single > 0)
+            units = single;
+        return 30 + units;
+    }
+
+    // C. 處理「十」字結構 (如：十五、三十、十)
+    size_t pos_10 = str.rfind("十");
+    if (pos_10 != std::string::npos) {
+        int tens = 1;
+        if (pos_10 >= 3) {
+            int pre = get_cn_digit(str, pos_10 - 3);
+            if (pre > 0)
+                tens = pre;
+        }
+        int units = 0;
+        int post = get_cn_digit(str, pos_10 + 3);
+        if (post > 0)
+            units = post;
+        return tens * 10 + units;
+    }
+
+    // D. 純個位數 (如：兩、五)
+    int last_digit = 0;
+    for (size_t i = 0; i + 2 < str.length(); i++) {
+        int d = get_cn_digit(str, i);
+        if (d > 0)
+            last_digit = d;
+    }
+    return last_digit;
+}
+
+// 3. 終極語音時間解析器 (支援「X分Y秒」拆解！)
+static int parse_timer_seconds(const std::string& str) {
+    // 優先處理特例：「半分」、「分半」
+    if (str.find("半分") != std::string::npos)
+        return 30;
+    if (str.find("分半") != std::string::npos) {
+        size_t pos = str.find("分半");
+        int m = parse_single_number(str.substr(0, pos));
+        if (m == 0)
+            m = 1;
+        return m * 60 + 30;
+    }
+
+    // 尋找「分」與「秒」的位置
+    size_t pos_min = str.find("分");
+    size_t pos_sec = str.find("秒");
+
+    // ==========================================
+    // 情況 A: 同時有分和秒 (例如 "1分15秒", "兩分鐘三十秒")
+    // ==========================================
+    if (pos_min != std::string::npos && pos_sec != std::string::npos && pos_min < pos_sec) {
+        // 切割前半段：算出分鐘
+        int m = parse_single_number(str.substr(0, pos_min));
+        int s = 0;
+        // 切割後半段：算出秒數 (避免越界)
+        if (pos_sec > pos_min + 3) {
+            s = parse_single_number(str.substr(pos_min + 3, pos_sec - pos_min - 3));
+        }
+        if (m == 0)
+            m = 1;  // 容錯：如果沒聽清楚幾分，預設當作 1 分
+        return m * 60 + s;
+    }
+
+    // ==========================================
+    // 情況 B: 只有分
+    // ==========================================
+    if (pos_min != std::string::npos) {
+        int m = parse_single_number(str.substr(0, pos_min));
+        if (m == 0)
+            m = 1;  // 沒講數字預設為 1 分鐘
+        return m * 60;
+    }
+
+    // ==========================================
+    // 情況 C: 只有秒
+    // ==========================================
+    if (pos_sec != std::string::npos) {
+        int s = parse_single_number(str.substr(0, pos_sec));
+        if (s == 0)
+            s = 30;  // 單講秒但沒講數字，預設 30 秒
+        return s;
+    }
+
+    // ==========================================
+    // 情況 D: 都沒有單位
+    // ==========================================
+    if (str.find("半") != std::string::npos) {
+        return 30;  // 單獨講 "半" (當作半分鐘)
+    }
+
+    int n = parse_single_number(str);
+    if (n > 0)
+        return n * 60;  // 只講數字不講單位，預設當作「分鐘」
+
+    // 終極防呆
+    return 3 * 60;  // 聽不懂一律 3 分鐘
 }
 
 // ==========================================
@@ -538,7 +992,7 @@ static void reset_mark_six_ui() {
         }
     }
     if (marksix_tip_label) {
-        lv_label_set_text(marksix_tip_label, "SHAKE TO DRAW (0/6)");
+        lv_label_set_text(marksix_tip_label, "Lucky Draw (0/6)");
     }
 }
 
@@ -579,9 +1033,9 @@ static void draw_one_mark_six_ball() {
     // 更新底部提示
     if (marksix_tip_label) {
         if (marksix_count < 6) {
-            lv_label_set_text_fmt(marksix_tip_label, "SHAKE TO DRAW (%d/6)", marksix_count);
+            lv_label_set_text_fmt(marksix_tip_label, "Lucky Draw (%d/6)", marksix_count);
         } else {
-            lv_label_set_text(marksix_tip_label, "★ LUCKY 6 READY! ★");
+            lv_label_set_text(marksix_tip_label, "LUCKY 6 READY!");
         }
     }
     ESP_LOGI("MarkSix", "抽中第 %d 顆號碼球: %02d", marksix_count, num);
@@ -591,11 +1045,19 @@ static void draw_one_mark_six_ball() {
 //        太空侵略者 (Space Invaders) 系統變數
 // ==========================================
 #define SPACE_MAX_BULLETS 4
-#define SPACE_ALIEN_ROWS 3
+#define SPACE_MAX_ALIEN_ROWS 6
 #define SPACE_ALIEN_COLS 4
-#define SPACE_MAX_BOMBS 3
+// 【外星人起始 Y 座標】距離頂部
+#define SPACE_ALIEN_START_Y 20
+#define SPACE_ALIEN_W 12  // 敵人寬度（原本是 10，建議可改 12 或 14）
+#define SPACE_MAX_BOMBS 8
+#define SPACE_ALIEN_H 8               // 敵人高度（原本是 10，建議可改 10 或 12）
+#define SPACE_DESCENT_INTERVAL_SEC 8  // 【可在這調節】：每 6 秒自動向下逼近一次
+#define SPACE_DESCENT_STEP_Y 12       // 【可在這調節】：每次向下移一層的距離 (像素)
 
-enum SpaceState { SPACE_STATE_START, SPACE_STATE_PLAYING, SPACE_STATE_GAMEOVER };
+static int space_descent_timer = 0;  // 下移計時器 (每 100ms 累加 1)
+
+enum SpaceState { SPACE_STATE_START, SPACE_STATE_PLAYING, SPACE_STATE_PAUSE, SPACE_STATE_GAMEOVER };
 
 struct SpaceBullet {
     bool active;
@@ -624,30 +1086,44 @@ static lv_obj_t* space_overlay_label = nullptr;
 
 static SpaceBullet space_bullets[SPACE_MAX_BULLETS];
 static SpaceBomb space_bombs[SPACE_MAX_BOMBS];
-static SpaceAlien space_aliens[SPACE_ALIEN_ROWS][SPACE_ALIEN_COLS];
+static SpaceAlien space_aliens[SPACE_MAX_ALIEN_ROWS][SPACE_ALIEN_COLS];  // 大小擴展至 6x4
 
 static int space_score = 0;
 static int space_best_score = 0;
+static int space_level = 1;        // 【新增】：當前關卡
+static int space_active_rows = 3;  // 【新增】：當前實際敵人層數 (預設 3)
 static SpaceState space_game_state = SPACE_STATE_START;
 static int space_ship_x = 64;  // 飛船 X 座標 (置中)
 
 // 外星人集團的移動狀態
 static int alien_group_x = 0;
-static int alien_group_y = 20;
+static int alien_group_y = SPACE_ALIEN_START_Y;
 static int alien_dir = 1;  // 1:向右, -1:向左
+static int alien_speed = 10;
 
 // ==========================================
 //        打磚塊 (Breakout) 系統變數
 // ==========================================
-#define BK_ROWS 4
+#define BK_MAX_ROWS 6
 #define BK_COLS 5
+// ==========================================
+// 【調節位置】：磚塊起始位置常數
+// ==========================================
+#define BK_BRICK_START_X 8   // 磚塊起始 X (置中)
+#define BK_BRICK_START_Y 18  // 【在這裡調節磚塊與分數的距離！】(原為 32 或 18)
+#define BK_BRICK_W 23        // 磚塊寬度
+#define BK_BRICK_H 8         // 磚塊高度
+#define BK_BRICK_STEP_Y 10   // 垂直間距 (高 8 + 間隙 2)
 
-enum BreakoutState { BK_STATE_START, BK_STATE_PLAYING, BK_STATE_GAMEOVER };
+enum BreakoutState { BK_STATE_START, BK_STATE_PLAYING, BK_STATE_PAUSE, BK_STATE_GAMEOVER };
+
+static int bk_active_rows = 4;  // 當前關卡的實際磚塊行數
+static lv_obj_t* bk_bricks[BK_MAX_ROWS][BK_COLS];
+static bool bk_bricks_active[BK_MAX_ROWS][BK_COLS];
 
 static lv_obj_t* bg_breakout = nullptr;
 static lv_obj_t* bk_paddle = nullptr;
 static lv_obj_t* bk_ball = nullptr;
-static lv_obj_t* bk_bricks[BK_ROWS][BK_COLS];
 static lv_obj_t* bk_score_label = nullptr;
 static lv_obj_t* bk_overlay = nullptr;
 static lv_obj_t* bk_overlay_label = nullptr;
@@ -664,7 +1140,6 @@ static int bk_ball_x = 62;
 static int bk_ball_y = 100;
 static int bk_ball_dx = 4;   // X 軸速度
 static int bk_ball_dy = -4;  // Y 軸速度 (隨關卡變快)
-static bool bk_bricks_active[BK_ROWS][BK_COLS];
 static bool bk_ball_launched = false;
 
 // 載入與儲存最高分
@@ -692,9 +1167,14 @@ static void init_breakout_level(bool is_new_game) {
         bk_score = 0;
         bk_level = 1;
     }
+    bk_active_rows = 4 + (bk_level - 1) / 3;
+    if (bk_active_rows > BK_MAX_ROWS) {
+        bk_active_rows = BK_MAX_ROWS;
+    }
+
     bk_paddle_w = 28 - (bk_level * 2);
-    if (bk_paddle_w < 12)
-        bk_paddle_w = 12;
+    if (bk_paddle_w < 14)
+        bk_paddle_w = 14;
 
     int speed = 4 + (bk_level / 2);
     if (speed > 8)
@@ -718,11 +1198,17 @@ static void init_breakout_level(bool is_new_game) {
         lv_obj_align(bk_ball, LV_ALIGN_TOP_LEFT, bk_ball_x, bk_ball_y);
 
     // 重置所有磚塊
-    for (int r = 0; r < BK_ROWS; r++) {
+    for (int r = 0; r < BK_MAX_ROWS; r++) {
         for (int c = 0; c < BK_COLS; c++) {
-            bk_bricks_active[r][c] = true;
-            if (bk_bricks[r][c])
-                lv_obj_remove_flag(bk_bricks[r][c], LV_OBJ_FLAG_HIDDEN);
+            if (r < bk_active_rows) {
+                bk_bricks_active[r][c] = true;
+                if (bk_bricks[r][c])
+                    lv_obj_remove_flag(bk_bricks[r][c], LV_OBJ_FLAG_HIDDEN);
+            } else {
+                bk_bricks_active[r][c] = false;
+                if (bk_bricks[r][c])
+                    lv_obj_add_flag(bk_bricks[r][c], LV_OBJ_FLAG_HIDDEN);
+            }
         }
     }
 }
@@ -1132,8 +1618,7 @@ static void update_2048_ui() {
     if (check_2048_game_over()) {
         game_state_2048 = STATE_GAMEOVER;
         if (overlay_2048 && overlay_label) {
-            lv_label_set_text_fmt(overlay_label, "GAME OVER\n\nSCORE: %d\n\n[CLICK]",
-                                  current_score);
+            lv_label_set_text_fmt(overlay_label, "GAME\nOVER\nScore:\n%d", current_score);
             lv_obj_remove_flag(overlay_2048, LV_OBJ_FLAG_HIDDEN);
         }
     }
@@ -1413,22 +1898,47 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
     if (strcmp(role, "user") == 0 && content != nullptr) {
         std::string text(content);
 
+        // 🌟 新增：塔羅模式防休眠攔截
+        if (text.find("抽牌") != std::string::npos || text.find("占卜") != std::string::npos ||
+            text.find("易經") != std::string::npos || text.find("塔羅") != std::string::npos) {
+            if (text.find("停止") != std::string::npos || text.find("結束") != std::string::npos ||
+                text.find("退出") != std::string::npos) {
+                is_tarot_mode = false;
+                ESP_LOGI("VoiceCmd", "退出塔羅模式，恢復 3 分鐘待機");
+            } else {
+                is_tarot_mode = true;
+                ESP_LOGI("VoiceCmd", "進入塔羅模式，延長待機至 15 分鐘");
+            }
+        }
+
         // 1. 擲杯指令
         if (text.find("杯") != std::string::npos || text.find("筊") != std::string::npos) {
             ESP_LOGI("VoiceCmd", "語音指令：立即跳轉至 擲杯");
-            current_system_mode = 2;
-            current_ui_mode = 2;
-            game_menu_selection = 0;  // 選擇 擲杯
+            current_system_mode = 5;
+            current_ui_mode = 5;
+            app_menu_selection = APP_BWA;  // 選擇 擲杯
             ui_mode_changed = true;
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
         }
         // 2. 六合彩指令
         else if (text.find("六合彩") != std::string::npos ||
                  text.find("六合") != std::string::npos) {
             ESP_LOGI("VoiceCmd", "語音指令：立即跳轉至 六合彩");
-            current_system_mode = 2;
-            current_ui_mode = 2;
-            game_menu_selection = 1;  // 選擇 六合彩
+            current_system_mode = 5;
+            current_ui_mode = 5;
+            app_menu_selection = APP_MARK6;  // 選擇 六合彩
             ui_mode_changed = true;
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
         }
         // 3. 太空侵略者指令
         else if (text.find("太空") != std::string::npos || text.find("飛機") != std::string::npos ||
@@ -1436,8 +1946,29 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
             ESP_LOGI("VoiceCmd", "語音指令：立即跳轉至 太空侵略者");
             current_system_mode = 2;
             current_ui_mode = 2;
-            game_menu_selection = 2;  // 選擇 Space
+            game_menu_selection = GAME_SPACE;  // 選擇 Space
             ui_mode_changed = true;
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
+        }
+        // 老虎機
+        else if (text.find("老虎機") != std::string::npos ||
+                 text.find("slot") != std::string::npos) {
+            ESP_LOGI("VoiceCmd", "語音指令：立即跳轉至 老虎機");
+            current_system_mode = 2;
+            current_ui_mode = 2;
+            game_menu_selection = GAME_SLOT;  // 選擇 Breakout
+            ui_mode_changed = true;
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
         }
         // 4. 打磚塊指令
         else if (text.find("磚塊") != std::string::npos || text.find("砖块") != std::string::npos ||
@@ -1445,8 +1976,14 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
             ESP_LOGI("VoiceCmd", "語音指令：立即跳轉至 打磚塊");
             current_system_mode = 2;
             current_ui_mode = 2;
-            game_menu_selection = 5;  // 選擇 Breakout
+            game_menu_selection = GAME_BREAKOUT;  // 選擇 Breakout
             ui_mode_changed = true;
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
         }
         // 5. 2048 指令 (同時支援阿拉伯數字「2048」與中文「二零四八」)
         else if (text.find("2048") != std::string::npos ||
@@ -1454,8 +1991,14 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
             ESP_LOGI("VoiceCmd", "語音指令：立即跳轉至 2048");
             current_system_mode = 2;  // 進入遊戲模式
             current_ui_mode = 2;
-            game_menu_selection = 3;  // 選擇 2048
-            ui_mode_changed = true;   // 立刻重繪畫面！
+            game_menu_selection = GAME_2048;  // 選擇 2048
+            ui_mode_changed = true;           // 立刻重繪畫面！
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
         }
         // 6. 貪食蛇指令
         else if (text.find("蛇") != std::string::npos || text.find("snake") != std::string::npos ||
@@ -1463,21 +2006,54 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
             ESP_LOGI("VoiceCmd", "語音指令：立即跳轉至 貪食蛇");
             current_system_mode = 2;
             current_ui_mode = 2;
-            game_menu_selection = 4;  // 選擇 貪食蛇
+            game_menu_selection = GAME_SNAKE;  // 選擇 貪食蛇
             ui_mode_changed = true;
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
         }
-        // 6. 時鐘模式指令 (支援繁簡「時間」、「時鐘」、「睇時間」、「幾點」)
+        // 6. 時間模式指令 (橫向)
         else if (text.find("時間模式") != std::string::npos ||
                  text.find("时间模式") != std::string::npos ||
                  text.find("時鐘模式") != std::string::npos ||
-                 text.find("时钟模式") != std::string::npos) {
-            ESP_LOGI("VoiceCmd", "語音指令：立即跳轉至 時鐘待機模式");
+                 text.find("睇時間") != std::string::npos ||
+                 text.find("几点") != std::string::npos) {
+            ESP_LOGI("VoiceCmd", "語音指令：跳轉至 橫向時間模式");
             current_system_mode = 3;
             current_ui_mode = 3;
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight)
-                backlight->SetBrightness(5);  // 自動變暗
+                backlight->SetBrightness(100);
             ui_mode_changed = true;
+        }
+        // 7. 天氣模式指令 (橫向)
+        else if (text.find("天氣模式") != std::string::npos ||
+                 text.find("天气模式") != std::string::npos ||
+                 text.find("睇天氣") != std::string::npos) {
+            ESP_LOGI("VoiceCmd", "語音指令：跳轉至 橫向天氣模式");
+            current_system_mode = 6;  // 新增模式 6 給天氣
+            current_ui_mode = 6;
+            auto backlight = Board::GetInstance().GetBacklight();
+            if (backlight)
+                backlight->SetBrightness(100);
+            ui_mode_changed = true;
+
+            // 立即喚醒背景去抓天氣
+            int64_t now_us = esp_timer_get_time();
+            if (weather_task_handle &&
+                (last_weather_fetch_us == 0 || now_us - last_weather_fetch_us > 10000000LL)) {
+                last_weather_fetch_us = now_us;
+                xTaskNotifyGive(weather_task_handle);
+            }
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
         }
         // 6. 判斷巴士查詢指令 (喚醒背景工人去抓資料)
         else if (text.find("巴士") != std::string::npos || text.find("號") != std::string::npos ||
@@ -1491,7 +2067,112 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
                 xTaskNotifyGive(bus_task_handle);  // 拍醒工人
             }
         }
+        // 7. 計時器指令
+        else if (text.find("倒數") != std::string::npos) {
+            ESP_LOGI("VoiceCmd", "語音指令：啟動計時器");
+            int total_sec = parse_timer_seconds(text);
+            timer_total_us = (int64_t)total_sec * 1000000LL;  // 轉換為微秒
+            timer_remain_us = timer_total_us;
+            timer_state = TIMER_IDLE;
+
+            current_system_mode = 5;
+            current_ui_mode = 5;
+            app_menu_selection = APP_TIMER;
+            ui_mode_changed = true;
+
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
+        }
+        // 8. 碼表指令
+        else if (text.find("計時") != std::string::npos) {
+            ESP_LOGI("VoiceCmd", "語音指令：啟動碼表");
+            sw_state = SW_IDLE;
+            sw_accumulated_us = 0;
+
+            current_system_mode = 5;
+            current_ui_mode = 5;
+            app_menu_selection = APP_STOPWATCH;
+            ui_mode_changed = true;
+
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
+        }
+        // 水平儀指令
+        else if (text.find("水平儀") != std::string::npos ||
+                 text.find("水平仪") != std::string::npos ||
+                 text.find("水平移") != std::string::npos ||
+                 text.find("量水平") != std::string::npos ||
+                 text.find("梁水平") != std::string::npos ||
+                 text.find("涼水平") != std::string::npos ||
+                 text.find("度水平") != std::string::npos) {
+            ESP_LOGI("VoiceCmd", "語音指令：啟動水平儀");
+
+            current_system_mode = 5;  // 進入 App 執行模式
+            current_ui_mode = 5;
+            app_menu_selection = APP_LEVEL;  // 指定啟動 水平儀
+            ui_mode_changed = true;
+
+            // 立即掐斷語音並暫停 AI
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
+        }
     }
+}
+
+// 啟動指定列的滾動動畫
+static void slot_start_spinning(int col) {
+    if (!slot_img[col])
+        return;
+    lv_anim_del(slot_img[col], nullptr);  // 先清除舊動畫
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, slot_img[col]);
+    lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
+
+    // 8個圖案，剛好銜接第9個圖案
+    lv_anim_set_values(&a, 0, 0 - (SLOT_WIDTH * 8));
+    // 設定不同速度，讓三排看起來有差異 (400ms, 480ms, 560ms)
+    lv_anim_set_time(&a, 400 + col * 80);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);  // 無限滾動
+    lv_anim_start(&a);
+}
+
+// 停止指定列，並產生清脆的「卡榫回彈」視覺效果
+static void slot_stop_reel(int col) {
+    if (!slot_img[col])
+        return;
+    lv_anim_del(slot_img[col], nullptr);  // 瞬間停止無限滾動
+
+    // 隨機抽 0 ~ 7 (剛好對應你的 8 個實質圖案)
+    int result = esp_random() % 8;
+    slot_results[col] = result;
+
+    // 算出目標的 Y 座標
+    int target_y = -(result * SLOT_WIDTH);
+
+    // 建立一個煞車回彈動畫 (Overshoot)
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, slot_img[col]);
+    lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
+    // 故意從目標上方 30px 滑入，搭配回彈，創造出實體機器的卡榫手感
+    lv_anim_set_values(&a, target_y - 30, target_y);
+    lv_anim_set_time(&a, 300);                        // 300毫秒煞車
+    lv_anim_set_path_cb(&a, lv_anim_path_overshoot);  // 彈性回彈效果！
+    lv_anim_start(&a);
 }
 
 // --- 定時器：控制畫面刷新與狀態 ---
@@ -1569,50 +2250,74 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             lv_obj_add_flag(bg_bwa, LV_OBJ_FLAG_HIDDEN);
         if (bg_marksix)
             lv_obj_add_flag(bg_marksix, LV_OBJ_FLAG_HIDDEN);
+        if (bg_timer)
+            lv_obj_add_flag(bg_timer, LV_OBJ_FLAG_HIDDEN);
+        if (bg_stopwatch)
+            lv_obj_add_flag(bg_stopwatch, LV_OBJ_FLAG_HIDDEN);
+        if (bg_level)
+            lv_obj_add_flag(bg_level, LV_OBJ_FLAG_HIDDEN);
         if (bg_space)
             lv_obj_add_flag(bg_space, LV_OBJ_FLAG_HIDDEN);
+        if (bg_slot)
+            lv_obj_add_flag(bg_slot, LV_OBJ_FLAG_HIDDEN);
         if (bg_breakout)
             lv_obj_add_flag(bg_breakout, LV_OBJ_FLAG_HIDDEN);
-        if (bg_clock)
-            lv_obj_add_flag(bg_clock, LV_OBJ_FLAG_HIDDEN);
+        if (bg_time_mode)
+            lv_obj_add_flag(bg_time_mode, LV_OBJ_FLAG_HIDDEN);
+        if (bg_weather_mode)
+            lv_obj_add_flag(bg_weather_mode, LV_OBJ_FLAG_HIDDEN);
 
-        // 2. 根據現在的模式，把對應的圖層打開
-        if (current_ui_mode == 1) {  // --- 進入選單 ---
-            if (!game_menu_bg) {     /* 建立選單的代碼... 這裡省略，保留你原本建立選單那幾行 */
+        // 防呆：如果退出老虎機，務必清除背景無限運作的滾動動畫，避免浪費 CPU！
+        if (current_ui_mode != 2 || game_menu_selection != GAME_SLOT) {
+            for (int i = 0; i < 3; i++) {
+                if (slot_img[i])
+                    lv_anim_del(slot_img[i], nullptr);
+            }
+            slot_game_state = SLOT_STATE_IDLE;
+        }
+        // 2. 根據現在的模式，打開對應的選單
+        if (current_ui_mode == 1 || current_ui_mode == 4) {  // 1 game mode, 4 app mode
+            if (!game_menu_bg) {
                 game_menu_bg = lv_obj_create(lv_scr_act());
                 lv_obj_set_size(game_menu_bg, LCD_W, LCD_H);
                 lv_obj_set_style_bg_color(game_menu_bg, lv_color_black(), 0);
                 lv_obj_align(game_menu_bg, LV_ALIGN_CENTER, 0, 0);
+                lv_obj_set_style_border_width(game_menu_bg, 0, 0);
+                lv_obj_set_style_radius(game_menu_bg, 0, 0);
+                lv_obj_set_style_pad_all(game_menu_bg, 0, 0);
 
-                // 徹底去除邊框與圓角，讓黑色填滿整個螢幕！
-                lv_obj_set_style_border_width(game_menu_bg, 0, 0);  // 邊框寬度設為 0
-                lv_obj_set_style_radius(game_menu_bg, 0, 0);        // 取消圓角，變正方形
-                lv_obj_set_style_pad_all(game_menu_bg, 0, 0);       // 內外邊距歸零
-
-                lv_obj_t* title = lv_label_create(game_menu_bg);
-                lv_label_set_text(title, "GAME MODE");
-                lv_obj_set_style_text_color(title, lv_color_make(255, 230, 0), 0);
-                lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
+                menu_title_label = lv_label_create(game_menu_bg);
+                lv_obj_set_style_text_color(menu_title_label, lv_color_make(255, 230, 0), 0);
+                lv_obj_align(menu_title_label, LV_ALIGN_TOP_MID, 0, 5);
 
                 game_menu_label = lv_label_create(game_menu_bg);
                 lv_obj_align(game_menu_label, LV_ALIGN_CENTER, 0, 0);
             }
             lv_obj_remove_flag(game_menu_bg, LV_OBJ_FLAG_HIDDEN);
-            const char* menu_texts[] = {"Moon\nBlock", "Mark 6", "Space\nInvaders",
-                                        "Breakout",    "2048",   "Snake"};
-            lv_label_set_text(game_menu_label, menu_texts[game_menu_selection]);
+
+            // 【核心分離邏輯】：未來新增 App 或 Game，只要在這邊的陣列加字即可！
+            if (current_ui_mode == 4) {
+                lv_obj_set_style_bg_color(game_menu_bg, lv_color_hex(0x000ec7), 0);
+                lv_label_set_text(menu_title_label, "APP MODE");
+                const char* app_texts[] = {"Moon\nBlock", "Mark 6", "Spirit\nLevel", "Stop\nWatch",
+                                           "Timer"};
+                lv_label_set_text(game_menu_label, app_texts[app_menu_selection]);
+            } else {
+                lv_obj_set_style_bg_color(game_menu_bg, lv_color_hex(0x57007b), 0);
+                lv_label_set_text(menu_title_label, "GAME MODE");
+                const char* game_texts[] = {"Space\nInvaders", "Lucky 7", "Breakout", "2048",
+                                            "Snake"};
+                lv_label_set_text(game_menu_label, game_texts[game_menu_selection]);
+            }
+
             lv_obj_set_style_text_font(game_menu_label, &lv_font_montserrat_28, 0);
             lv_obj_set_style_text_line_space(game_menu_label, -4, 0);
             lv_obj_set_style_text_align(game_menu_label, LV_TEXT_ALIGN_CENTER, 0);
             lv_obj_set_style_text_color(game_menu_label, lv_color_white(), 0);
-            // lv_obj_set_style_transform_zoom(game_menu_label, 192, 0);
-            // lv_obj_set_style_transform_pivot_x(game_menu_label, 0, 0);
-            // lv_obj_set_style_transform_pivot_y(game_menu_label, 0, 0);
 
             return;
-
-        } else if (current_ui_mode == 2) {  // --- 進入遊戲 ---
-            if (game_menu_selection == 0) {
+        } else if (current_ui_mode == 5) {  // --- 進入 APP 模式 ---
+            if (app_menu_selection == APP_BWA) {
                 // ==================== 擲杯 啟動邏輯 ====================
                 if (!bg_bwa) {
                     bg_bwa = lv_obj_create(lv_scr_act());
@@ -1671,11 +2376,11 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 // 每次進入先給一個隨機預設值
                 // set_bwa_face(esp_random() % 2, esp_random() % 2, false);
                 set_bwa_face(1, 1, false);
-
                 if (!imu_initialized)
                     imu_init();
                 return;
-            } else if (game_menu_selection == 1) {
+
+            } else if (app_menu_selection == APP_MARK6) {
                 // ==================== 六合彩 啟動邏輯 ====================
                 if (!bg_marksix) {
                     bg_marksix = lv_obj_create(lv_scr_act());
@@ -1687,7 +2392,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
                     // 1. 金黃色標題
                     lv_obj_t* title = lv_label_create(bg_marksix);
-                    lv_label_set_text(title, "★ MARK SIX ★");
+                    lv_label_set_text(title, "★ MARK 6 ★");
                     lv_obj_set_style_text_color(title, lv_color_make(255, 200, 0), 0);
                     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 4);
 
@@ -1717,11 +2422,159 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
                 // 每次進入遊戲，重置盤面為 6 個空白待抽球
                 reset_mark_six_ui();
-
                 if (!imu_initialized)
                     imu_init();
                 return;
-            } else if (game_menu_selection == 2) {
+
+            } else if (app_menu_selection == APP_TIMER) {
+                // ==================== 計時器 UI 啟動邏輯 ====================
+                if (!bg_timer) {
+                    bg_timer = lv_obj_create(lv_scr_act());
+                    lv_obj_set_size(bg_timer, LCD_W, LCD_H);
+                    lv_obj_set_style_bg_color(bg_timer, lv_color_black(), 0);
+                    lv_obj_set_style_border_width(bg_timer, 0, 0);
+                    lv_obj_set_style_radius(bg_timer, 0, 0);
+                    lv_obj_set_style_pad_all(bg_timer, 0, 0);
+
+                    lv_obj_t* title = lv_label_create(bg_timer);
+                    lv_label_set_text(title, "TIMER");
+                    lv_obj_set_style_text_color(title, lv_color_make(0, 255, 255), 0);
+                    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
+
+                    // 上行：分與秒
+                    timer_time_label = lv_label_create(bg_timer);
+                    lv_obj_set_style_text_font(timer_time_label, &lv_font_montserrat_28, 0);
+                    lv_obj_set_style_text_color(timer_time_label, lv_color_white(), 0);
+                    lv_obj_align(timer_time_label, LV_ALIGN_CENTER, 0, -15);  // 稍微往上移
+
+                    // 下行：毫秒 (較小字體或同字體放下面)
+                    timer_ms_label = lv_label_create(bg_timer);
+                    lv_obj_set_style_text_font(timer_ms_label, &lv_font_montserrat_28, 0);
+                    lv_obj_set_style_text_color(timer_ms_label, lv_color_hex(0xAAAAAA),
+                                                0);                        // 淺灰色凸顯層次
+                    lv_obj_align(timer_ms_label, LV_ALIGN_CENTER, 0, 16);  // 放在秒數下方
+
+                    // 狀態提示
+                    timer_status_label = lv_label_create(bg_timer);
+                    lv_obj_align(timer_status_label, LV_ALIGN_BOTTOM_MID, 0, -4);
+                }
+                lv_obj_remove_flag(bg_timer, LV_OBJ_FLAG_HIDDEN);
+
+                // UI 更新將由核心引擎即時處理，這裡只做初始化狀態
+                if (timer_state == TIMER_IDLE) {
+                    lv_label_set_text(timer_status_label, "Press to Start");
+                    lv_obj_set_style_text_color(timer_status_label, lv_color_hex(0xAAAAAA), 0);
+                }
+                return;
+            } else if (app_menu_selection == APP_STOPWATCH) {
+                // ==================== 碼表 UI 啟動邏輯 ====================
+                if (!bg_stopwatch) {
+                    bg_stopwatch = lv_obj_create(lv_scr_act());
+                    lv_obj_set_size(bg_stopwatch, LCD_W, LCD_H);
+                    lv_obj_set_style_bg_color(bg_stopwatch, lv_color_black(), 0);
+                    lv_obj_set_style_border_width(bg_stopwatch, 0, 0);
+                    lv_obj_set_style_radius(bg_stopwatch, 0, 0);
+                    lv_obj_set_style_pad_all(bg_stopwatch, 0, 0);
+
+                    lv_obj_t* title = lv_label_create(bg_stopwatch);
+                    lv_label_set_text(title, "STOPWATCH");
+                    lv_obj_set_style_text_color(title, lv_color_make(255, 100, 100),
+                                                0);  // 橘紅色標題
+                    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
+
+                    sw_time_label = lv_label_create(bg_stopwatch);
+                    lv_obj_set_style_text_font(sw_time_label, &lv_font_montserrat_28, 0);
+                    lv_obj_set_style_text_color(sw_time_label, lv_color_white(), 0);
+                    lv_obj_align(sw_time_label, LV_ALIGN_CENTER, 0, -15);
+
+                    sw_ms_label = lv_label_create(bg_stopwatch);
+                    lv_obj_set_style_text_font(sw_ms_label, &lv_font_montserrat_28, 0);
+                    lv_obj_set_style_text_color(sw_ms_label, lv_color_hex(0xAAAAAA), 0);
+                    lv_obj_align(sw_ms_label, LV_ALIGN_CENTER, 0, 16);
+
+                    sw_status_label = lv_label_create(bg_stopwatch);
+                    lv_obj_align(sw_status_label, LV_ALIGN_BOTTOM_MID, 0, -4);
+                }
+                lv_obj_remove_flag(bg_stopwatch, LV_OBJ_FLAG_HIDDEN);
+                sw_state = SW_IDLE;
+                sw_accumulated_us = 0;
+
+                if (sw_state == SW_IDLE) {
+                    lv_label_set_text(sw_status_label, "Press to Start");
+                    lv_obj_set_style_text_color(sw_status_label, lv_color_hex(0xAAAAAA), 0);
+                }
+                return;
+            } else if (app_menu_selection == APP_LEVEL) {
+                // ==================== 水平儀 UI 啟動邏輯 ====================
+                if (!bg_level) {
+                    bg_level = lv_obj_create(lv_scr_act());
+                    lv_obj_set_size(bg_level, LCD_W, LCD_H);
+                    lv_obj_set_style_bg_color(bg_level, lv_color_black(), 0);
+                    lv_obj_set_style_border_width(bg_level, 0, 0);
+                    lv_obj_set_style_radius(bg_level, 0, 0);
+                    lv_obj_set_style_pad_all(bg_level, 0, 0);
+
+                    // 標題
+                    lv_obj_t* title = lv_label_create(bg_level);
+                    lv_label_set_text(title, "LEVEL");
+                    lv_obj_set_style_text_color(title, lv_color_make(0, 255, 0), 0);
+                    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
+
+                    // 外圈圓形準星
+                    level_target_circle = lv_obj_create(bg_level);
+                    lv_obj_set_size(level_target_circle, 70, 70);
+                    lv_obj_set_style_radius(level_target_circle, LV_RADIUS_CIRCLE, 0);
+                    lv_obj_set_style_bg_opa(level_target_circle, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_border_color(level_target_circle, lv_color_white(), 0);
+                    lv_obj_set_style_border_width(level_target_circle, 2, 0);
+                    lv_obj_align(level_target_circle, LV_ALIGN_CENTER, 0, 0);
+                    lv_obj_clear_flag(level_target_circle, LV_OBJ_FLAG_SCROLLABLE);
+
+                    // 中間圓形準星
+                    inside_circle = lv_obj_create(bg_level);
+                    lv_obj_set_size(inside_circle, 35, 35);
+                    lv_obj_set_style_radius(inside_circle, LV_RADIUS_CIRCLE, 0);
+                    lv_obj_set_style_bg_opa(inside_circle, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_border_color(inside_circle, lv_color_hex(0x555555), 0);
+                    lv_obj_set_style_border_width(inside_circle, 2, 0);
+                    lv_obj_align(inside_circle, LV_ALIGN_CENTER, 0, 0);
+                    lv_obj_clear_flag(inside_circle, LV_OBJ_FLAG_SCROLLABLE);
+
+                    // 十字準心線
+                    lv_obj_t* h_line = lv_obj_create(level_target_circle);
+                    lv_obj_set_size(h_line, 70, 2);
+                    lv_obj_set_style_bg_color(h_line, lv_color_hex(0x555555), 0);
+                    lv_obj_set_style_border_width(h_line, 0, 0);
+                    lv_obj_align(h_line, LV_ALIGN_CENTER, 0, 0);
+
+                    lv_obj_t* v_line = lv_obj_create(level_target_circle);
+                    lv_obj_set_size(v_line, 2, 70);
+                    lv_obj_set_style_bg_color(v_line, lv_color_hex(0x555555), 0);
+                    lv_obj_set_style_border_width(v_line, 0, 0);
+                    lv_obj_align(v_line, LV_ALIGN_CENTER, 0, 0);
+
+                    // 移動的水平氣泡 (紅/黃/綠)
+                    level_bubble = lv_obj_create(bg_level);
+                    lv_obj_set_size(level_bubble, 20, 20);
+                    lv_obj_set_style_radius(level_bubble, LV_RADIUS_CIRCLE, 0);
+                    lv_obj_set_style_bg_color(level_bubble, lv_color_hex(0xFF0000),
+                                              0);  // 預設紅色
+                    lv_obj_set_style_border_width(level_bubble, 0, 0);
+                    lv_obj_align(level_bubble, LV_ALIGN_CENTER, 0, 0);
+                    lv_obj_clear_flag(level_bubble, LV_OBJ_FLAG_SCROLLABLE);
+
+                    // 數據文字
+                    level_info_label = lv_label_create(bg_level);
+                    // lv_obj_set_style_text_font(level_info_label, &lv_font_montserrat_28, 0);
+                    lv_obj_align(level_info_label, LV_ALIGN_BOTTOM_MID, 0, 0);
+                }
+                lv_obj_remove_flag(bg_level, LV_OBJ_FLAG_HIDDEN);
+                if (!imu_initialized)
+                    imu_init();
+                return;
+            }
+        } else if (current_ui_mode == 2) {  // --- 進入遊戲 ---
+            if (game_menu_selection == GAME_SPACE) {
                 // ==================== 太空侵略者 啟動邏輯 ====================
                 if (!bg_space) {
                     load_space_best_score();
@@ -1765,30 +2618,38 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                     for (int i = 0; i < SPACE_MAX_BOMBS; i++) {
                         space_bombs[i].active = false;
                         space_bombs[i].obj = lv_obj_create(bg_space);
-                        lv_obj_set_size(space_bombs[i].obj, 5, 5);  // 炸彈大小
-                        lv_obj_set_style_bg_color(space_bombs[i].obj, lv_color_hex(0xFF33FF),
-                                                  0);  // 紫紅色，警示感強
-                        lv_obj_set_style_radius(space_bombs[i].obj, LV_RADIUS_CIRCLE,
-                                                0);  // 圓形炸彈
+                        lv_obj_set_size(space_bombs[i].obj, 5, 5);
+                        lv_obj_set_style_bg_color(space_bombs[i].obj, lv_color_hex(0xFF33FF), 0);
+                        lv_obj_set_style_radius(space_bombs[i].obj, LV_RADIUS_CIRCLE, 0);
                         lv_obj_set_style_border_width(space_bombs[i].obj, 0, 0);
                         lv_obj_clear_flag(space_bombs[i].obj, LV_OBJ_FLAG_SCROLLABLE);
                         lv_obj_add_flag(space_bombs[i].obj, LV_OBJ_FLAG_HIDDEN);
                     }
 
                     // 4. 外星人物件池 (3x4 = 12隻)
-                    for (int r = 0; r < SPACE_ALIEN_ROWS; r++) {
+                    uint32_t alien_colors[SPACE_MAX_ALIEN_ROWS] = {
+                        0xFF3333,  // 第1排：鮮紅
+                        0xFF7700,  // 第2排：橙橘
+                        0xFFDD00,  // 第3排：亮黃
+                        0x33FF33,  // 第4排：青綠
+                        0x00FFFF,  // 第5排：青藍
+                        0xFF33FF   // 第6排：紫紅
+                    };
+                    for (int r = 0; r < SPACE_MAX_ALIEN_ROWS; r++) {
                         for (int c = 0; c < SPACE_ALIEN_COLS; c++) {
                             space_aliens[r][c].active = true;
                             space_aliens[r][c].obj = lv_obj_create(bg_space);
-                            lv_obj_set_size(space_aliens[r][c].obj, 10, 10);
+                            lv_obj_set_size(space_aliens[r][c].obj, SPACE_ALIEN_W, SPACE_ALIEN_H);
                             lv_obj_set_style_bg_color(space_aliens[r][c].obj,
-                                                      lv_color_hex(0xFF3333), 0);  // 紅色
+                                                      lv_color_hex(alien_colors[r]), 0);
                             lv_obj_set_style_radius(space_aliens[r][c].obj, 2, 0);
                             lv_obj_set_style_border_width(space_aliens[r][c].obj, 0, 0);
                             lv_obj_clear_flag(space_aliens[r][c].obj, LV_OBJ_FLAG_SCROLLABLE);
                             // 初始排列
                             lv_obj_align(space_aliens[r][c].obj, LV_ALIGN_TOP_LEFT, 15 + c * 25,
-                                         20 + r * 15);
+                                         SPACE_ALIEN_START_Y + r * 15);
+                            lv_obj_add_flag(space_aliens[r][c].obj,
+                                            LV_OBJ_FLAG_HIDDEN);  // 開局前隱藏
                         }
                     }
 
@@ -1801,22 +2662,81 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
                     space_overlay_label = lv_label_create(space_overlay);
                     lv_obj_set_style_text_color(space_overlay_label, lv_color_make(255, 200, 0), 0);
+                    lv_obj_set_style_text_font(space_overlay_label, &lv_font_montserrat_28, 0);
                     lv_obj_set_style_text_align(space_overlay_label, LV_TEXT_ALIGN_CENTER, 0);
                     lv_obj_align(space_overlay_label, LV_ALIGN_CENTER, 0, 0);
                 }
 
                 lv_obj_remove_flag(bg_space, LV_OBJ_FLAG_HIDDEN);
                 space_game_state = SPACE_STATE_START;
-                lv_label_set_text_fmt(space_overlay_label, "SPACE\n\nBEST: %d\n\n[CLICK START]",
-                                      space_best_score);
+                lv_label_set_text_fmt(space_overlay_label, "Best\nScore:\n%d", space_best_score);
                 lv_label_set_text_fmt(space_score_label, "S:%d  B:%d", space_score,
                                       space_best_score);
                 lv_obj_remove_flag(space_overlay, LV_OBJ_FLAG_HIDDEN);
 
-                if (!imu_initialized)
-                    imu_init();
-                return;
-            } else if (game_menu_selection == 3) {
+            }
+            // ===============================================
+            // UI 建立區塊 (修復白底與無縫輪播)
+            // ===============================================
+            else if (game_menu_selection == GAME_SLOT) {
+                if (!bg_slot) {
+                    bg_slot = lv_obj_create(lv_scr_act());
+                    lv_obj_set_size(bg_slot, LCD_W, LCD_H);
+                    lv_obj_set_style_bg_color(bg_slot, lv_color_black(), 0);
+                    lv_obj_set_style_border_width(bg_slot, 0, 0);
+                    lv_obj_set_style_radius(bg_slot, 0, 0);
+                    lv_obj_set_style_pad_all(bg_slot, 0, 0);
+
+                    // 頂部分數
+                    slot_score_label = lv_label_create(bg_slot);
+                    lv_label_set_text_fmt(slot_score_label, "C: %d", slot_score);
+                    lv_obj_set_style_text_color(slot_score_label, lv_color_make(255, 200, 0), 0);
+                    lv_obj_set_style_text_font(slot_score_label, &lv_font_montserrat_24, 0);
+                    lv_obj_align(slot_score_label, LV_ALIGN_TOP_MID, 0, 5);
+
+                    // 紅色外框 (模擬實體老虎機面板)
+                    lv_obj_t* frame = lv_obj_create(bg_slot);
+                    lv_obj_set_size(frame, 10 + (SLOT_WIDTH * 3),
+                                    SLOT_WIDTH + 4);  // 剛好包住三個轉輪 + 邊界
+                    lv_obj_set_style_bg_color(frame, lv_color_make(220, 30, 30), 0);  // 賭場紅
+                    lv_obj_set_style_border_width(frame, 0, 0);
+                    lv_obj_set_style_pad_all(frame, 2, 0);  // 給裡面留 2px 縫隙
+                    lv_obj_align(frame, LV_ALIGN_CENTER, 0, 0);
+
+                    for (int i = 0; i < 3; i++) {
+                        slot_col[i] = lv_obj_create(frame);
+                        lv_obj_set_size(slot_col[i], SLOT_WIDTH, SLOT_WIDTH);
+                        lv_obj_set_style_bg_color(slot_col[i], lv_color_white(), 0);
+                        lv_obj_set_style_border_width(slot_col[i], 0, 0);
+                        lv_obj_set_style_pad_all(slot_col[i], 0, 0);
+
+                        // ★ 關鍵：關閉滾動並開啟裁切，只露出 40x40 空間
+                        lv_obj_clear_flag(slot_col[i], LV_OBJ_FLAG_SCROLLABLE);
+                        lv_obj_set_style_clip_corner(slot_col[i], true, 0);
+
+                        // 水平排列 (每個留 2px 間距)
+                        lv_obj_align(slot_col[i], LV_ALIGN_LEFT_MID, i * (SLOT_WIDTH + 2), 0);
+
+                        // 放進 40x360 的長條圖片
+                        slot_img[i] = lv_img_create(slot_col[i]);
+                        lv_img_set_src(slot_img[i], &slot_36);  // 呼叫你的圖檔
+                        lv_obj_set_y(slot_img[i], 0);
+                    }
+
+                    // 底部狀態文字
+                    slot_status_label = lv_label_create(bg_slot);
+                    lv_label_set_text(slot_status_label, "Press to Spin!");
+                    lv_obj_set_style_text_color(slot_status_label, lv_color_white(), 0);
+                    lv_obj_align(slot_status_label, LV_ALIGN_BOTTOM_MID, 0, -10);
+                }
+                lv_obj_remove_flag(bg_slot, LV_OBJ_FLAG_HIDDEN);
+
+                // 進入遊戲時，若沒金幣給他救濟金
+                if (slot_score <= 0 && slot_game_state != SLOT_STATE_GAMEOVER) {
+                    slot_score = 100;
+                }
+                lv_label_set_text_fmt(slot_score_label, "C: %d", slot_score);
+            } else if (game_menu_selection == GAME_BREAKOUT) {
                 // ==================== 打磚塊 啟動邏輯 ====================
                 if (!bg_breakout) {
                     load_bk_best_score();
@@ -1848,10 +2768,10 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                     lv_obj_set_style_border_width(bk_ball, 0, 0);
                     lv_obj_clear_flag(bk_ball, LV_OBJ_FLAG_SCROLLABLE);
 
-                    // 磚塊陣列 (4行 x 5列)
-                    uint32_t row_colors[] = {0xFF3333, 0xFF9933, 0x33FF33,
-                                             0x3333FF};  // 紅、橘、綠、藍
-                    for (int r = 0; r < BK_ROWS; r++) {
+                    // 2. 建立 6 層磚塊 (顏色：紅、橘、黃、綠、藍、紫)
+                    uint32_t row_colors[BK_MAX_ROWS] = {0xFF3333, 0xFF7700, 0xFFCC00,
+                                                        0x33CC33, 0x00A8FF, 0x9933FF};
+                    for (int r = 0; r < BK_MAX_ROWS; r++) {
                         for (int c = 0; c < BK_COLS; c++) {
                             bk_bricks[r][c] = lv_obj_create(bg_breakout);
                             lv_obj_set_size(bk_bricks[r][c], 23, 8);  // 寬 23，高 8
@@ -1861,8 +2781,9 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                             lv_obj_set_style_border_width(bk_bricks[r][c], 0, 0);
                             lv_obj_clear_flag(bk_bricks[r][c], LV_OBJ_FLAG_SCROLLABLE);
                             // 排版計算：間距 2px，起點 X=2, Y=18
-                            lv_obj_align(bk_bricks[r][c], LV_ALIGN_TOP_LEFT, 2 + c * 25,
-                                         18 + r * 10);
+                            lv_obj_align(bk_bricks[r][c], LV_ALIGN_TOP_LEFT,
+                                         BK_BRICK_START_X + c * BK_BRICK_W,
+                                         BK_BRICK_START_Y + r * BK_BRICK_STEP_Y);
                         }
                     }
 
@@ -1875,6 +2796,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
                     bk_overlay_label = lv_label_create(bk_overlay);
                     lv_obj_set_style_text_color(bk_overlay_label, lv_color_make(255, 200, 0), 0);
+                    lv_obj_set_style_text_font(bk_overlay_label, &lv_font_montserrat_28, 0);
                     lv_obj_set_style_text_align(bk_overlay_label, LV_TEXT_ALIGN_CENTER, 0);
                     lv_obj_align(bk_overlay_label, LV_ALIGN_CENTER, 0, 0);
                 }
@@ -1882,15 +2804,11 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 lv_obj_remove_flag(bg_breakout, LV_OBJ_FLAG_HIDDEN);
                 bk_game_state = BK_STATE_START;
                 init_breakout_level(true);  // 初始化第一關
-                lv_label_set_text_fmt(bk_overlay_label, "BREAKOUT\n\nBEST: %d\n\n[CLICK]",
-                                      bk_best_score);
+                lv_label_set_text_fmt(bk_overlay_label, "Best\nScore:\n%d", bk_best_score);
                 lv_label_set_text_fmt(bk_score_label, "L:%d  S:%d", bk_level, bk_score);
                 lv_obj_remove_flag(bk_overlay, LV_OBJ_FLAG_HIDDEN);
 
-                if (!imu_initialized)
-                    imu_init();
-                return;
-            } else if (game_menu_selection == 4) {
+            } else if (game_menu_selection == GAME_2048) {
                 // ==================== 2048 啟動邏輯 (保留原樣) ====================
                 if (!bg_2048) {
                     load_best_score();
@@ -1932,6 +2850,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
                     overlay_label = lv_label_create(overlay_2048);
                     lv_obj_set_style_text_color(overlay_label, lv_color_make(255, 200, 0), 0);
+                    lv_obj_set_style_text_font(overlay_label, &lv_font_montserrat_28, 0);
                     lv_obj_set_style_text_align(overlay_label, LV_TEXT_ALIGN_CENTER, 0);
                     lv_obj_align(overlay_label, LV_ALIGN_CENTER, 0, 0);
                 }
@@ -1939,11 +2858,10 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
                 // 每次新切入 2048，先進入 START 畫面
                 game_state_2048 = STATE_START_SCREEN;
-                lv_label_set_text_fmt(overlay_label, "2048\n\nBEST: %d\n\n[CLICK START]",
-                                      best_score);
+                lv_label_set_text_fmt(overlay_label, "Best\nScore:\n%d", best_score);
                 lv_obj_remove_flag(overlay_2048, LV_OBJ_FLAG_HIDDEN);
 
-            } else if (game_menu_selection == 5) {
+            } else if (game_menu_selection == GAME_SNAKE) {
                 // ==================== 貪食蛇 啟動邏輯 ====================
                 if (!bg_snake) {
                     load_snake_best_score();
@@ -1986,13 +2904,13 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
                     snake_overlay_label = lv_label_create(snake_overlay);
                     lv_obj_set_style_text_color(snake_overlay_label, lv_color_make(255, 200, 0), 0);
+                    lv_obj_set_style_text_font(snake_overlay_label, &lv_font_montserrat_28, 0);
                     lv_obj_set_style_text_align(snake_overlay_label, LV_TEXT_ALIGN_CENTER, 0);
                     lv_obj_align(snake_overlay_label, LV_ALIGN_CENTER, 0, 0);
                 }
                 lv_obj_remove_flag(bg_snake, LV_OBJ_FLAG_HIDDEN);
                 snake_game_state = SNAKE_STATE_START;
-                lv_label_set_text_fmt(snake_overlay_label, "SNAKE\n\nBEST: %d\n\n[CLICK START]",
-                                      snake_best_score);
+                lv_label_set_text_fmt(snake_overlay_label, "Best\nScore:\n%d", snake_best_score);
                 lv_obj_remove_flag(snake_overlay, LV_OBJ_FLAG_HIDDEN);
             }
 
@@ -2000,63 +2918,76 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 imu_init();
             return;
         } else if (current_ui_mode == 3) {
-            // ==================== 【獨立時鐘模式】 ====================
-            if (!bg_clock) {
-                bg_clock = lv_obj_create(lv_scr_act());
-                lv_obj_set_size(bg_clock, LCD_W, LCD_H);
-                lv_obj_set_style_bg_color(bg_clock, lv_color_black(), 0);
-                lv_obj_set_style_border_width(bg_clock, 0, 0);
-                lv_obj_set_style_radius(bg_clock, 0, 0);
-                lv_obj_set_style_pad_all(bg_clock, 0, 0);
+            // ==================== 【時間模式】 ====================
+            if (!bg_time_mode) {
+                bg_time_mode = lv_obj_create(lv_scr_act());
+                lv_obj_set_size(bg_time_mode, LCD_W, LCD_H);
+                lv_obj_set_style_border_width(bg_time_mode, 0, 0);
+                lv_obj_set_style_pad_all(bg_time_mode, 0, 0);
+                lv_obj_clear_flag(bg_time_mode, LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_align(bg_time_mode, LV_ALIGN_TOP_LEFT, 0, 0);
+                lv_obj_set_style_radius(bg_time_mode, 0, 0);
 
-                clock_time_label = lv_label_create(bg_clock);
-                lv_obj_set_style_text_color(clock_time_label, lv_color_white(), 0);
-                lv_obj_set_style_text_font(clock_time_label, &lv_font_montserrat_28, 0);
-                lv_obj_align(clock_time_label, LV_ALIGN_TOP_LEFT, 10, 10);  // 靠左 6，靠上 10
+                // 時間
+                time_mode_time_label = lv_label_create(bg_time_mode);
+                lv_obj_set_style_text_font(time_mode_time_label, &micro5_65, 0);
+                lv_obj_align(time_mode_time_label, LV_ALIGN_LEFT_MID, 9, -22);  // 靠左 10，向下 10
 
-                clock_date_label = lv_label_create(bg_clock);
-                lv_obj_set_style_text_color(clock_date_label, lv_color_white(), 0);
-                // lv_obj_set_style_text_color(clock_date_label, lv_color_hex(0xAAAAAA), 0);
-                lv_obj_align(clock_date_label, LV_ALIGN_TOP_LEFT, 9, 46);  // 靠下對齊
-
-                // 建立天氣標籤 (固定在正下方)
-                clock_weather_label = lv_label_create(bg_clock);
-                // lv_obj_set_style_text_color(clock_weather_label, lv_color_white(), 0);
-                lv_obj_set_style_text_color(clock_weather_label, lv_color_make(255, 230, 0), 0);
-                //  文字靠左
-                lv_obj_set_style_text_align(clock_weather_label, LV_TEXT_ALIGN_LEFT, 0);
-                lv_obj_set_style_text_line_space(clock_weather_label, -2, 0);
-                lv_obj_align(clock_weather_label, LV_ALIGN_TOP_LEFT, 9, 69);  // 日期下方
-
-                // 256是100%，192是75%
-                // lv_obj_set_style_transform_zoom(clock_weather_label, 192, 0);
-                // lv_obj_set_style_transform_pivot_x(clock_weather_label, 0, 0);
-                // lv_obj_set_style_transform_pivot_y(clock_weather_label, 0, 0);
+                // 日期與星期 (右上角)
+                time_mode_date_label = lv_label_create(bg_time_mode);
+                lv_obj_set_style_text_font(time_mode_date_label, &lv_font_montserrat_24, 0);
+                lv_obj_align(time_mode_date_label, LV_ALIGN_BOTTOM_LEFT, 9, -10);
             }
-            lv_obj_remove_flag(bg_clock, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(bg_time_mode, LV_OBJ_FLAG_HIDDEN);
 
-            // 1. 立即更新時間
-            update_clock_display();
-
-            // =========================================================================
-            // 檢查是否超過 30 秒，若是則立即拍醒背景工人去抓最新天氣！
-            // =========================================================================
-            int64_t now_us = esp_timer_get_time();
-            if (weather_task_handle &&
-                (last_weather_fetch_us == 0 || now_us - last_weather_fetch_us > 30000000LL)) {
-                last_weather_fetch_us = now_us;
-                xTaskNotifyGive(weather_task_handle);  // 拍醒工人！
-                ESP_LOGI("Weather", "進入時鐘模式，觸發背景即時天氣更新！");
-            }
-            // =========================================================================
-
-            // 調暗螢幕至 10%
-            clock_is_bright = false;
-            clock_dim_countdown = 0;
+            update_clock_display();                            // 刷新資訊
+            clock_is_bright = true;                            // 👈 原本是 false，改為 true
+            clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;  // 👈 原本是 0，改為開始倒數
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight)
-                backlight->SetBrightness(10);
+                backlight->SetBrightness(100);  // 👈 原本是 BRIGHTNESS_DIM，改為 100
+            return;
+        } else if (current_ui_mode == 6) {
+            // ==================== 【天氣模式】 ====================
+            if (!bg_weather_mode) {
+                bg_weather_mode = lv_obj_create(lv_scr_act());
+                lv_obj_set_size(bg_weather_mode, LCD_W, LCD_H);
+                lv_obj_set_style_border_width(bg_weather_mode, 0, 0);
+                lv_obj_set_style_pad_all(bg_weather_mode, 0, 0);
+                lv_obj_clear_flag(bg_weather_mode, LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_align(bg_weather_mode, LV_ALIGN_TOP_LEFT, 0, 0);
+                lv_obj_set_style_radius(bg_weather_mode, 0, 0);
 
+                // 圖示「畫布容器」
+                weather_icon_container = lv_obj_create(bg_weather_mode);
+                lv_obj_set_size(weather_icon_container, 70, 70);
+                lv_obj_set_style_bg_opa(weather_icon_container, LV_OPA_TRANSP, 0);  // 透明底
+                lv_obj_set_style_border_width(weather_icon_container, 0, 0);
+                lv_obj_clear_flag(weather_icon_container, LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_align(weather_icon_container, LV_ALIGN_TOP_LEFT, 2, 4);
+
+                // 氣溫與狀態 (兩行)
+                weather_current_label = lv_label_create(bg_weather_mode);
+                lv_obj_set_style_text_font(weather_current_label, &lv_font_montserrat_24, 0);
+                lv_obj_set_style_text_line_space(weather_current_label, 2, 0);
+                lv_obj_align(weather_current_label, LV_ALIGN_TOP_LEFT, 10, 58);
+
+                // 最高與最低溫
+                weather_hilo_label = lv_label_create(bg_weather_mode);
+                lv_obj_align(weather_hilo_label, LV_ALIGN_TOP_MID, 25, 12);
+                lv_obj_set_style_text_line_space(weather_hilo_label, -4, 0);
+            }
+            lv_obj_remove_flag(bg_weather_mode, LV_OBJ_FLAG_HIDDEN);
+
+            // 強制重繪一次圖標
+            memset(last_drawn_weather, 0, sizeof(last_drawn_weather));
+            update_clock_display();
+
+            clock_is_bright = true;                            // 👈 原本是 false，改為 true
+            clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;  // 👈 原本是 0，改為開始倒數
+            auto backlight = Board::GetInstance().GetBacklight();
+            if (backlight)
+                backlight->SetBrightness(100);  // 👈 原本是 BRIGHTNESS_DIM，改為 100
             return;
         } else if (current_ui_mode == 0) {  // --- 退出遊戲，回到 AI ---
             // 恢復臉部顯示
@@ -2064,13 +2995,18 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             lv_obj_remove_flag(avatar_right_eye, LV_OBJ_FLAG_HIDDEN);
             lv_obj_remove_flag(avatar_mouth, LV_OBJ_FLAG_HIDDEN);
             last_avatar_state = (DeviceState)-1;  // 強制刷新臉部
+            clock_is_bright = true;
+            clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
+            auto backlight = Board::GetInstance().GetBacklight();
+            if (backlight)
+                backlight->SetBrightness(100);
         }
     }
 
     // ==============================================
     // 貪食蛇自動前進引擎 (每 200ms 走一步)
     // ==============================================
-    if (current_ui_mode == 2 && game_menu_selection == 5 &&
+    if (current_ui_mode == 2 && game_menu_selection == GAME_SNAKE &&
         snake_game_state == SNAKE_STATE_PLAYING) {
         static int snake_tick_counter = 0;
         if (++snake_tick_counter >= 2) {  // 2 * 100ms = 200ms 前進一格
@@ -2082,16 +3018,32 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             // 如果撞牆或咬到自己
             if (!alive) {
                 snake_game_state = SNAKE_STATE_GAMEOVER;
-                lv_label_set_text_fmt(snake_overlay_label, "GAME OVER\n\nSCORE: %d\n\n[CLICK]",
-                                      snake_score);
+                lv_label_set_text_fmt(snake_overlay_label, "GAME\nOVER\nScore:\n%d", snake_score);
                 lv_obj_remove_flag(snake_overlay, LV_OBJ_FLAG_HIDDEN);
                 ESP_LOGI("Snake", "Game Over! 最終得分: %d", snake_score);
             }
         }
     }
 
+    // ==============================================
+    // 通用螢幕背光 5 秒自動變暗倒數 (適用於 AI待機、時間、天氣)
+    // ==============================================
+    if (current_ui_mode == 3 || current_ui_mode == 6 ||
+        (current_ui_mode == 0 && Application::GetInstance().GetDeviceState() == kDeviceStateIdle)) {
+        if (clock_is_bright && clock_dim_countdown > 0) {
+            clock_dim_countdown--;
+            if (clock_dim_countdown == 0) {
+                auto backlight = Board::GetInstance().GetBacklight();
+                if (backlight)
+                    backlight->SetBrightness(BRIGHTNESS_DIM);
+                clock_is_bright = false;
+                ESP_LOGI("System", "5秒無操作，螢幕自動變暗");
+            }
+        }
+    }
+
     // --- 時鐘模式：每 1 秒更新一次時間文字。支援點亮、手動/自動 3 秒變暗 ---
-    if (current_ui_mode == 3) {
+    if (current_ui_mode == 3 || current_ui_mode == 6) {
         auto backlight = Board::GetInstance().GetBacklight();
 
         // 1. 處理按鍵訊號 (短按點亮 / 熄滅)
@@ -2117,24 +3069,12 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             } else {
                 // 當前已經是亮的，手動再按一次 -> 立刻變暗 (不用等3秒)
                 if (backlight)
-                    backlight->SetBrightness(5);
+                    backlight->SetBrightness(BRIGHTNESS_DIM);
                 clock_is_bright = false;
                 clock_dim_countdown = 0;
                 ESP_LOGI("Clock", "手動變暗！");
             }
             pending_game_action = 0;  // 清除訊號
-        }
-
-        // 2. 處理 5 秒自動變暗倒數
-        if (clock_is_bright && clock_dim_countdown > 0) {
-            clock_dim_countdown--;
-            if (clock_dim_countdown == 0) {
-                // 5 秒到了，沒有新動作 -> 自動降回 5%
-                if (backlight)
-                    backlight->SetBrightness(5);
-                clock_is_bright = false;
-                ESP_LOGI("Clock", "5 秒無操作，自動變暗");
-            }
         }
 
         // 3. 每 1 秒刷新一次時間文字
@@ -2150,148 +3090,200 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     // ==============================================
     // 【體感控制核心】BMI270 讀取與雙遊戲方向分流
     // ==============================================
-    if (current_ui_mode == 2 && imu_initialized) {
+    if ((current_ui_mode == 0 || current_ui_mode == 2 || current_ui_mode == 5) && imu_initialized) {
         static bool tilt_locked_2048 = false;
-        uint8_t reg = BMI270_REG_DATA_X_LSB;  // 0x0C
+        uint8_t reg = BMI270_REG_DATA_X_LSB;
         uint8_t data[6] = {0};
 
         esp_err_t res = i2c_master_transmit_receive(imu_dev_handle, &reg, 1, data, 6, -1);
         if (res == ESP_OK) {
-            int16_t accel_x = (int16_t)((data[1] << 8) | data[0]);
-            int16_t accel_y = (int16_t)((data[3] << 8) | data[2]);
+            // 1. 先讀取晶片原始的數據
+            int16_t raw_x = (int16_t)((data[1] << 8) | data[0]);
+            int16_t raw_y = (int16_t)((data[3] << 8) | data[2]);
             int16_t accel_z = (int16_t)((data[5] << 8) | data[4]);
 
-            // 傾斜靈敏度閾值，傾斜靈敏度閾值，數值越小越靈敏
+            // 2. 【核心修正】校正 StickS3 的物理安裝方向與螢幕的對應關係
+            // 讓 accel_x 專門負責「左右傾斜」(右傾為正)
+            // 讓 accel_y 專門負責「前後傾斜」(前傾/螢幕朝下為正)
+            int16_t accel_x = -raw_y;
+            int16_t accel_y = raw_x;
+
+            // ==============================================
+            // 【新增】：AI 模式 (0) 專屬的臉部重力微移邏輯
+            // ==============================================
+            if (current_ui_mode == 0 && face_container != nullptr) {
+                int max_offset = 12;  // 表情最大可以移動的像素，你可以自由改成 8 或 10
+
+                // 換算比例：4096 大約是垂直 90 度 (1g)
+                int offset_x = (accel_x * max_offset) / 4096;
+                int offset_y = (accel_y * max_offset) / 4096;
+
+                // 限制不出界
+                if (offset_x > max_offset)
+                    offset_x = max_offset;
+                if (offset_x < -max_offset)
+                    offset_x = -max_offset;
+                if (offset_y > max_offset)
+                    offset_y = max_offset;
+                if (offset_y < -max_offset)
+                    offset_y = -max_offset;
+
+                // 即時移動整個臉部的容器！
+                // (注意：StickS3 在螢幕正放時，x 或 y 軸的感應器方向可能需要加上負號反轉)
+                lv_obj_align(face_container, LV_ALIGN_CENTER, -offset_x, offset_y);
+            }
+
             const int16_t THRESHOLD_2048 = 2500;
             const int16_t THRESHOLD_SNAKE = 2000;
 
-            // ----------------------------------------------------
-            // 模式 A：擲杯 搖晃感應 (Shake Detection)
-            // ----------------------------------------------------
-            if (game_menu_selection == 0) {
-                static int16_t prev_x = 0, prev_y = 0, prev_z = 0;
-                int delta = abs(accel_x - prev_x) + abs(accel_y - prev_y) + abs(accel_z - prev_z);
-                prev_x = accel_x;
-                prev_y = accel_y;
-                prev_z = accel_z;
+            // --- APP 模式 ---
+            if (current_ui_mode == 5) {
+                if (app_menu_selection == APP_BWA) {
+                    static int16_t prev_x = 0, prev_y = 0, prev_z = 0;
+                    int delta =
+                        abs(accel_x - prev_x) + abs(accel_y - prev_y) + abs(accel_z - prev_z);
+                    prev_x = accel_x;
+                    prev_y = accel_y;
+                    prev_z = accel_z;
 
-                if (delta > 18000 && bwa_roll_anim_ticks == 0) {
-                    bwa_roll_anim_ticks = 16;
-                    ESP_LOGI("BwaPei", "偵測到搖晃！開始擲杯！");
+                    if (delta > 18000 && bwa_roll_anim_ticks == 0) {
+                        bwa_roll_anim_ticks = 16;
+                        ESP_LOGI("BwaPei", "偵測到搖晃！開始擲杯！");
+                    }
+                } else if (app_menu_selection == APP_MARK6) {
+                    static int16_t prev_m6_x = 0, prev_m6_y = 0, prev_m6_z = 0;
+                    int delta = abs(accel_x - prev_m6_x) + abs(accel_y - prev_m6_y) +
+                                abs(accel_z - prev_m6_z);
+                    prev_m6_x = accel_x;
+                    prev_m6_y = accel_y;
+                    prev_m6_z = accel_z;
+
+                    if (marksix_shake_cooldown > 0) {
+                        marksix_shake_cooldown--;
+                    }
+
+                    // 偵測到用力搖晃，且冷卻時間結束
+                    if (delta > 18000 && marksix_shake_cooldown == 0) {
+                        marksix_shake_cooldown = 6;  // 600ms 防重複抖動
+                        draw_one_mark_six_ball();
+                        ESP_LOGI("MarkSix", "偵測到搖晃！抽出號碼球！");
+                    }
+                } else if (app_menu_selection == APP_LEVEL) {
+                    // BMI270 量程我們設為 ±4g，1g 約等於 8192。
+                    // 用 accel_x 和 accel_y 來計算傾斜角度對應的像素點
+                    int max_radius = 45;  // 氣泡最大移動範圍(像素)
+
+                    // 靈敏度係數 (4096 約等於 30 度角就碰到邊緣)
+                    // 備註：依據 Stick/Atom 的晶片貼片方向，x/y 可能需要加負號互換。
+                    // 以下為 Stick S3 預設直立正面的通用映射：
+                    int pixel_x = (accel_x * max_radius) / 4096;
+                    int pixel_y = (accel_y * max_radius) / 4096;
+
+                    // 限制氣泡不出界
+                    if (pixel_x > max_radius)
+                        pixel_x = max_radius;
+                    if (pixel_x < -max_radius)
+                        pixel_x = -max_radius;
+                    if (pixel_y > max_radius)
+                        pixel_y = max_radius;
+                    if (pixel_y < -max_radius)
+                        pixel_y = -max_radius;
+
+                    if (level_bubble) {
+                        // StickS3 的物理特性通常是：螢幕朝上平放時，氣泡應歸中
+                        // 反轉方向使得實體操作就像真的氣泡一樣
+                        lv_obj_align(level_bubble, LV_ALIGN_CENTER, -pixel_x, pixel_y);
+
+                        // 計算總偏差值
+                        int deviation = abs(pixel_x) + abs(pixel_y);
+
+                        // 變色與文字狀態
+                        if (deviation < 3) {
+                            lv_obj_set_style_bg_color(level_bubble, lv_color_hex(0x00FF66),
+                                                      0);  // 完美水平：亮綠色
+                            lv_label_set_text(level_info_label, "FLAT");
+                            lv_obj_set_style_text_color(level_info_label, lv_color_hex(0x00FF66),
+                                                        0);
+                        } else if (deviation < 15) {
+                            lv_obj_set_style_bg_color(level_bubble, lv_color_hex(0xFFDD00),
+                                                      0);  // 接近：黃色
+                            lv_label_set_text_fmt(level_info_label, "X:%d  Y:%d", -pixel_x,
+                                                  pixel_y);
+                            lv_obj_set_style_text_color(level_info_label, lv_color_white(), 0);
+                        } else {
+                            lv_obj_set_style_bg_color(level_bubble, lv_color_hex(0xFF3333),
+                                                      0);  // 歪斜：紅色
+                            lv_label_set_text_fmt(level_info_label, "X:%d  Y:%d", -pixel_x,
+                                                  pixel_y);
+                            lv_obj_set_style_text_color(level_info_label, lv_color_white(), 0);
+                        }
+                    }
                 }
             }
-            // ----------------------------------------------------
-            // 模式 B：六合彩 搖晃抽波
-            // ----------------------------------------------------
-            else if (game_menu_selection == 1) {
-                static int16_t prev_m6_x = 0, prev_m6_y = 0, prev_m6_z = 0;
-                int delta =
-                    abs(accel_x - prev_m6_x) + abs(accel_y - prev_m6_y) + abs(accel_z - prev_m6_z);
-                prev_m6_x = accel_x;
-                prev_m6_y = accel_y;
-                prev_m6_z = accel_z;
+            // --- GAME 模式 ---
+            else if (current_ui_mode == 2) {
+                if (game_menu_selection == GAME_SPACE && space_game_state == SPACE_STATE_PLAYING) {
+                    const int16_t DEADZONE = 600;
+                    int ship_speed = (abs(accel_y) > 5000) ? 12 : 6;
+                    if (accel_x > DEADZONE)
+                        space_ship_x += ship_speed;  // 右傾往右移
+                    else if (accel_x < -DEADZONE)
+                        space_ship_x -= ship_speed;  // 左傾往左移
 
-                if (marksix_shake_cooldown > 0) {
-                    marksix_shake_cooldown--;
-                }
+                    if (space_ship_x < 0)
+                        space_ship_x = 0;
+                    if (space_ship_x > LCD_W - 16)
+                        space_ship_x = LCD_W - 16;
+                    if (space_ship)
+                        lv_obj_align(space_ship, LV_ALIGN_TOP_LEFT, space_ship_x, LCD_H * 0.9);
+                } else if (game_menu_selection == GAME_BREAKOUT &&
+                           bk_game_state == BK_STATE_PLAYING) {
+                    const int16_t DEADZONE = 600;
+                    int pad_speed = (abs(accel_x) > 5000) ? 12 : 6;
+                    if (accel_x > DEADZONE)
+                        bk_paddle_x += pad_speed;
+                    else if (accel_x < -DEADZONE)
+                        bk_paddle_x -= pad_speed;
 
-                // 偵測到用力搖晃，且冷卻時間結束
-                if (delta > 18000 && marksix_shake_cooldown == 0) {
-                    marksix_shake_cooldown = 6;  // 600ms 防重複抖動
-                    draw_one_mark_six_ball();
-                    ESP_LOGI("MarkSix", "偵測到搖晃！抽出號碼球！");
-                }
-            }
-            // ----------------------------------------------------
-            // 模式 C：【新增】太空侵略者 (Space) 體感飛船控制
-            // ----------------------------------------------------
-            else if (game_menu_selection == 2 && space_game_state == SPACE_STATE_PLAYING) {
-                // 【核心優化】降低死區，提升靈敏度！
-                const int16_t DEADZONE = 600;  // 原本是 1500，現在只要稍微傾斜就能動！
-
-                // 動態變速：如果傾斜角度超大 (>5000)，飛船速度加倍 (7px)，否則一般速度 (4px)
-                int ship_speed = (abs(accel_y) > 5000) ? 12 : 6;
-
-                if (accel_y < -DEADZONE) {
-                    space_ship_x += ship_speed;  // 往右飛
-                } else if (accel_y > DEADZONE) {
-                    space_ship_x -= ship_speed;  // 往左飛
-                }
-
-                // 邊界防護
-                if (space_ship_x < 0)
-                    space_ship_x = 0;
-                if (space_ship_x > LCD_W - 16)
-                    space_ship_x = LCD_W - 16;
-
-                if (space_ship) {
-                    lv_obj_align(space_ship, LV_ALIGN_TOP_LEFT, space_ship_x, LCD_H * 0.9);
-                }
-            }
-            // ----------------------------------------------------
-            // 模式 D：【新增】打磚塊 (Breakout) 體感擋板控制
-            // ----------------------------------------------------
-            else if (game_menu_selection == 3 && bk_game_state == BK_STATE_PLAYING) {
-                const int16_t DEADZONE = 600;
-                // 【修改這裡】將速度大幅提升！
-                // 輕微傾斜時：每次移動 6 像素 (原本 4)
-                // 用力傾斜時：每次瞬間衝刺 12 像素 (原本 8)
-                int pad_speed = (abs(accel_y) > 5000) ? 12 : 6;  // 動態感度
-
-                if (accel_y < -DEADZONE)
-                    bk_paddle_x += pad_speed;
-                else if (accel_y > DEADZONE)
-                    bk_paddle_x -= pad_speed;
-
-                // 邊界防護 (螢幕寬 128 - 擋板寬)
-                if (bk_paddle_x < 0)
-                    bk_paddle_x = 0;
-                if (bk_paddle_x > LCD_W - bk_paddle_w)
-                    bk_paddle_x = LCD_W - bk_paddle_w;
-
-                if (bk_paddle)
-                    lv_obj_align(bk_paddle, LV_ALIGN_TOP_LEFT, bk_paddle_x, LCD_H * 0.9);
-            }
-
-            // ----------------------------------------------------
-            // 模式 E：2048 體感 (需要鎖定放平)
-            // ----------------------------------------------------
-            else if (game_menu_selection == 4) {
-                if (abs(accel_x) > THRESHOLD_2048 || abs(accel_y) > THRESHOLD_2048) {
-                    if (!tilt_locked_2048) {
+                    if (bk_paddle_x < 0)
+                        bk_paddle_x = 0;
+                    if (bk_paddle_x > LCD_W - bk_paddle_w)
+                        bk_paddle_x = LCD_W - bk_paddle_w;
+                    if (bk_paddle)
+                        lv_obj_align(bk_paddle, LV_ALIGN_TOP_LEFT, bk_paddle_x, LCD_H * 0.9);
+                } else if (game_menu_selection == GAME_2048) {
+                    if (abs(accel_x) > THRESHOLD_2048 || abs(accel_y) > THRESHOLD_2048) {
+                        if (!tilt_locked_2048) {
+                            // 直覺判斷：X軸變化大就是左右，Y軸變化大就是上下
+                            if (abs(accel_x) > abs(accel_y)) {
+                                if (accel_x > 0)
+                                    pending_game_action = 2;  // 右傾 -> 向右滑
+                                else
+                                    pending_game_action = 1;  // 左傾 -> 向左滑
+                            } else {
+                                if (accel_y > 0)
+                                    pending_game_action = 3;  // 前傾 -> 向上滑
+                                else
+                                    pending_game_action = 4;  // 後傾 -> 向下滑
+                            }
+                            tilt_locked_2048 = true;
+                        }
+                    } else
+                        tilt_locked_2048 = false;
+                } else if (game_menu_selection == GAME_SNAKE &&
+                           snake_game_state == SNAKE_STATE_PLAYING) {
+                    if (abs(accel_x) > THRESHOLD_SNAKE || abs(accel_y) > THRESHOLD_SNAKE) {
                         if (abs(accel_x) > abs(accel_y)) {
                             if (accel_x > 0)
-                                pending_game_action = 3;  // 上
+                                snake_set_direction(DIR_RIGHT);
                             else
-                                pending_game_action = 4;  // 下
+                                snake_set_direction(DIR_LEFT);
                         } else {
-                            if (accel_y < 0)
-                                pending_game_action = 2;  // 右
+                            if (accel_y > 0)
+                                snake_set_direction(DIR_UP);
                             else
-                                pending_game_action = 1;  // 左
+                                snake_set_direction(DIR_DOWN);
                         }
-                        tilt_locked_2048 = true;
-                    }
-                } else {
-                    tilt_locked_2048 = false;  // 放平回正
-                }
-            }
-            // ----------------------------------------------------
-            // 模式 F：貪食蛇體感 (即時方向盤，無須放平鎖定)
-            // ----------------------------------------------------
-            else if (game_menu_selection == 5 && snake_game_state == SNAKE_STATE_PLAYING) {
-                if (abs(accel_x) > THRESHOLD_SNAKE || abs(accel_y) > THRESHOLD_SNAKE) {
-                    // 採用與 2048 完全相同的經過校驗的軸向對應
-                    if (abs(accel_x) > abs(accel_y)) {
-                        if (accel_x > 0)
-                            snake_set_direction(DIR_UP);  // 上
-                        else
-                            snake_set_direction(DIR_DOWN);  // 下
-                    } else {
-                        if (accel_y < 0)
-                            snake_set_direction(DIR_RIGHT);  // 右
-                        else
-                            snake_set_direction(DIR_LEFT);  // 左
                     }
                 }
             }
@@ -2299,7 +3291,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     }
 
     // 安全地在 LVGL 執行緒裡處理遊戲動作 (方向 1~4，按鍵動作 5)
-    if (current_ui_mode == 2 && pending_game_action != 0) {
+    if ((current_ui_mode == 2 || current_ui_mode == 5) && pending_game_action != 0) {
         if (pending_game_action == 1)
             move_2048_left();
         else if (pending_game_action == 2)
@@ -2309,118 +3301,260 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         else if (pending_game_action == 4)
             move_2048_down();
         else if (pending_game_action == 5) {
-            if (game_menu_selection == 0) {
-                // 短按螢幕也可以直接觸發擲杯！
-                if (bwa_roll_anim_ticks == 0)
-                    bwa_roll_anim_ticks = 8;
-            } else if (game_menu_selection == 1) {
-                // 不想搖晃時，短按一下螢幕也可以抽一顆 (或重置)
-                draw_one_mark_six_ball();
-            } else if (game_menu_selection == 2) {
-                // ==================== Space 按鍵邏輯 ====================
-                if (space_game_state == SPACE_STATE_START ||
-                    space_game_state == SPACE_STATE_GAMEOVER) {
-                    space_game_state = SPACE_STATE_PLAYING;
-                    if (space_overlay)
-                        lv_obj_add_flag(space_overlay, LV_OBJ_FLAG_HIDDEN);
-                    space_score = 0;
-                    space_ship_x = 64;
-                    alien_group_x = 0;
-                    alien_group_y = 20;
-                    alien_dir = 1;
+            // ==================== APP 模式的短按動作 ====================
+            if (current_ui_mode == 5) {
+                if (app_menu_selection == APP_BWA) {
+                    if (bwa_roll_anim_ticks == 0)
+                        bwa_roll_anim_ticks = 8;
+                } else if (app_menu_selection == APP_MARK6) {
+                    draw_one_mark_six_ball();
+                } else if (app_menu_selection == APP_TIMER) {
+                    if (timer_state == TIMER_IDLE || timer_state == TIMER_PAUSED) {
+                        timer_state = TIMER_RUNNING;
+                        // 設定系統絕對結束時間 = 現在時間 + 剩餘微秒
+                        timer_end_time_us = esp_timer_get_time() + timer_remain_us;
+                        lv_label_set_text(timer_status_label, "Running...");
+                        lv_obj_set_style_text_color(timer_status_label, lv_color_hex(0x00FF66), 0);
+                    } else if (timer_state == TIMER_RUNNING) {
+                        timer_state = TIMER_PAUSED;
+                        // 記錄暫停時還剩多少微秒
+                        timer_remain_us = timer_end_time_us - esp_timer_get_time();
+                        lv_label_set_text(timer_status_label, "Paused");
+                        lv_obj_set_style_text_color(timer_status_label, lv_color_make(255, 200, 0),
+                                                    0);
+                    } else if (timer_state == TIMER_ALARM) {
+                        timer_remain_us = timer_total_us;  // 重置
+                        timer_state = TIMER_IDLE;
+                        lv_obj_set_style_bg_color(bg_timer, lv_color_black(), 0);
+                        lv_label_set_text(timer_status_label, "Press to Start");
+                        lv_obj_set_style_text_color(timer_status_label, lv_color_hex(0xAAAAAA), 0);
+                        lv_obj_set_style_text_color(timer_time_label, lv_color_white(), 0);
+                        lv_obj_set_style_text_color(timer_ms_label, lv_color_hex(0xAAAAAA), 0);
+                    }
+                } else if (app_menu_selection == APP_STOPWATCH) {
+                    if (sw_state == SW_IDLE || sw_state == SW_PAUSED) {
+                        sw_state = SW_RUNNING;
+                        sw_start_time_us = esp_timer_get_time() - sw_accumulated_us;
+                        lv_label_set_text(sw_status_label, "Running...");
+                        lv_obj_set_style_text_color(sw_status_label, lv_color_hex(0x00FF66), 0);
+                    } else if (sw_state == SW_RUNNING) {
+                        sw_state = SW_PAUSED;
+                        sw_accumulated_us = esp_timer_get_time() - sw_start_time_us;
+                        lv_label_set_text(sw_status_label, "Paused");
+                        lv_obj_set_style_text_color(sw_status_label, lv_color_make(255, 200, 0), 0);
+                    }
+                    // 若要重置碼表，只要長按或側鍵退出回選單再進入即可自動歸零。
+                }
+            }
+            // ==================== GAME 模式的短按動作 ====================
+            else if (current_ui_mode == 2) {
+                if (game_menu_selection == GAME_SPACE) {
+                    if (space_game_state == SPACE_STATE_START ||
+                        space_game_state == SPACE_STATE_GAMEOVER) {
+                        space_game_state = SPACE_STATE_PLAYING;
+                        if (space_overlay)
+                            lv_obj_add_flag(space_overlay, LV_OBJ_FLAG_HIDDEN);
+                        space_score = 0;
+                        space_level = 1;
+                        space_active_rows = 3;
+                        space_descent_timer = 0;
+                        alien_speed = 10;
+                        space_ship_x = (135 - 16) / 2;
+                        alien_group_x = 0;
+                        alien_group_y = SPACE_ALIEN_START_Y;
+                        alien_dir = 1;
 
-                    // 重置外星人與子彈
-                    for (int r = 0; r < SPACE_ALIEN_ROWS; r++) {
-                        for (int c = 0; c < SPACE_ALIEN_COLS; c++) {
-                            space_aliens[r][c].active = true;
-                            lv_obj_remove_flag(space_aliens[r][c].obj, LV_OBJ_FLAG_HIDDEN);
-                            lv_obj_align(space_aliens[r][c].obj, LV_ALIGN_TOP_LEFT, 15 + c * 25,
-                                         20 + r * 15);
+                        for (int r = 0; r < SPACE_MAX_ALIEN_ROWS; r++) {
+                            for (int c = 0; c < SPACE_ALIEN_COLS; c++) {
+                                if (r < space_active_rows) {
+                                    space_aliens[r][c].active = true;
+                                    lv_obj_remove_flag(space_aliens[r][c].obj, LV_OBJ_FLAG_HIDDEN);
+                                    lv_obj_align(space_aliens[r][c].obj, LV_ALIGN_TOP_LEFT,
+                                                 15 + c * 25, SPACE_ALIEN_START_Y + r * 15);
+                                } else {
+                                    space_aliens[r][c].active = false;
+                                    lv_obj_add_flag(space_aliens[r][c].obj, LV_OBJ_FLAG_HIDDEN);
+                                }
+                            }
+                        }
+                        for (int i = 0; i < SPACE_MAX_BULLETS; i++) {
+                            space_bullets[i].active = false;
+                            lv_obj_add_flag(space_bullets[i].obj, LV_OBJ_FLAG_HIDDEN);
+                        }
+                        for (int i = 0; i < SPACE_MAX_BOMBS; i++) {
+                            space_bombs[i].active = false;
+                            lv_obj_add_flag(space_bombs[i].obj, LV_OBJ_FLAG_HIDDEN);
+                        }
+                        lv_label_set_text_fmt(space_score_label, "L:%d S:%d B:%d", space_level,
+                                              space_score, space_best_score);
+                    } else if (space_game_state == SPACE_STATE_PLAYING) {
+                        space_game_state = SPACE_STATE_PAUSE;
+                        if (space_overlay && space_overlay_label) {
+                            lv_label_set_text_fmt(space_overlay_label, "Paused\nScore:\n%d",
+                                                  space_score);
+                            lv_obj_remove_flag(space_overlay, LV_OBJ_FLAG_HIDDEN);
+                        }
+                    } else if (space_game_state == SPACE_STATE_PAUSE) {
+                        space_game_state = SPACE_STATE_PLAYING;
+                        if (space_overlay)
+                            lv_obj_add_flag(space_overlay, LV_OBJ_FLAG_HIDDEN);
+                    }
+                }
+                // ===============================================
+                // 按鍵控制區塊 (加入 Game Over 判斷)
+                // ===============================================
+                else if (game_menu_selection == GAME_SLOT) {
+                    if (slot_game_state == SLOT_STATE_GAMEOVER) {
+                        slot_score = 100;
+                        lv_label_set_text_fmt(slot_score_label, "C: %d", slot_score);
+                        lv_label_set_text(slot_status_label, "Press to Spin!");
+                        slot_game_state = SLOT_STATE_IDLE;
+                    } else if (slot_game_state == SLOT_STATE_IDLE) {
+                        if (slot_score >= 10) {
+                            slot_score -= 10;
+                            lv_label_set_text_fmt(slot_score_label, "C: %d", slot_score);
+                            lv_label_set_text(slot_status_label, "Spinning...");
+
+                            slot_start_spinning(0);
+                            slot_start_spinning(1);
+                            slot_start_spinning(2);
+                            slot_game_state = SLOT_STATE_SPINNING;
+                        } else {
+                            // 防呆，沒錢了強制進入 GameOver
+                            slot_game_state = SLOT_STATE_GAMEOVER;
+                            lv_label_set_text(slot_status_label, "GAME OVER");
+                        }
+                    } else if (slot_game_state == SLOT_STATE_SPINNING) {
+                        slot_stop_reel(0);  // 按一下停第一排
+                        slot_game_state = SLOT_STATE_STOP_1;
+                    } else if (slot_game_state == SLOT_STATE_STOP_1) {
+                        slot_stop_reel(1);  // 按第二下停第二排
+                        slot_game_state = SLOT_STATE_STOP_2;
+                    } else if (slot_game_state == SLOT_STATE_STOP_2) {
+                        slot_stop_reel(2);  // 按第三下停第三排，並結算
+
+                        // =========================
+                        // 💰 中獎結算邏輯
+                        // =========================
+                        int r0 = slot_results[0];
+                        int r1 = slot_results[1];
+                        int r2 = slot_results[2];
+
+                        // 三星連線大獎！
+                        if (r0 == r1 && r1 == r2) {
+                            int win_amount = 50;
+
+                            // 第 5 個是 7 (索引 4)
+                            if (r0 == 4) {
+                                win_amount = 500;
+                                lv_label_set_text(slot_status_label, "SUPER 777! +500");
+                            }
+                            // 第 8 個是 BAR (索引 7)
+                            else if (r0 == 7) {
+                                win_amount = 200;
+                                lv_label_set_text(slot_status_label, "BAR BAR BAR! +200");
+                            } else {
+                                lv_label_set_text_fmt(slot_status_label, "JACKPOT! +%d",
+                                                      win_amount);
+                            }
+                            slot_score += win_amount;
+
+                        }
+                        // 兩個一樣，小獎安慰
+                        else if (r0 == r1 || r1 == r2 || r0 == r2) {
+                            slot_score += 15;
+                            lv_label_set_text(slot_status_label, "Small Win! +15");
+                        }
+                        // 沒中獎
+                        else {
+                            lv_label_set_text(slot_status_label, "Try Again!");
+                        }
+
+                        lv_label_set_text_fmt(slot_score_label, "C: %d", slot_score);
+
+                        // 【修復 3】：檢查結算後是否破產
+                        if (slot_score <= 0) {
+                            slot_game_state = SLOT_STATE_GAMEOVER;
+                            lv_label_set_text_fmt(slot_score_label, "BANKRUPT!");
+                            lv_label_set_text(slot_status_label, "GAME OVER");
+                            lv_obj_set_style_text_color(slot_status_label, lv_color_hex(0xFF3333),
+                                                        0);  // 變紅字警告
+                        } else {
+                            slot_game_state = SLOT_STATE_IDLE;
+                            lv_obj_set_style_text_color(slot_status_label, lv_color_white(),
+                                                        0);  // 恢復白字
                         }
                     }
-                    for (int i = 0; i < SPACE_MAX_BULLETS; i++) {
-                        space_bullets[i].active = false;
-                        lv_obj_add_flag(space_bullets[i].obj, LV_OBJ_FLAG_HIDDEN);
+                } else if (game_menu_selection == GAME_BREAKOUT) {
+                    if (bk_game_state == BK_STATE_START || bk_game_state == BK_STATE_GAMEOVER) {
+                        bk_game_state = BK_STATE_PLAYING;
+                        if (bk_overlay)
+                            lv_obj_add_flag(bk_overlay, LV_OBJ_FLAG_HIDDEN);
+                        init_breakout_level(true);
+                        lv_label_set_text_fmt(bk_score_label, "L:%d  S:%d", bk_level, bk_score);
+                    } else if (bk_game_state == BK_STATE_PLAYING) {
+                        if (!bk_ball_launched)
+                            bk_ball_launched = true;
+                        else {
+                            bk_game_state = BK_STATE_PAUSE;
+                            if (bk_overlay && bk_overlay_label) {
+                                lv_label_set_text_fmt(bk_overlay_label, "Paused\nScore:\n%d",
+                                                      bk_score);
+                                lv_obj_remove_flag(bk_overlay, LV_OBJ_FLAG_HIDDEN);
+                            }
+                        }
+                    } else if (bk_game_state == BK_STATE_PAUSE) {
+                        bk_game_state = BK_STATE_PLAYING;
+                        if (bk_overlay)
+                            lv_obj_add_flag(bk_overlay, LV_OBJ_FLAG_HIDDEN);
                     }
-                    for (int i = 0; i < SPACE_MAX_BOMBS; i++) {
-                        space_bombs[i].active = false;
-                        lv_obj_add_flag(space_bombs[i].obj, LV_OBJ_FLAG_HIDDEN);
+                } else if (game_menu_selection == GAME_2048) {
+                    if (game_state_2048 == STATE_START_SCREEN) {
+                        game_state_2048 = STATE_PLAYING;
+                        if (overlay_2048)
+                            lv_obj_add_flag(overlay_2048, LV_OBJ_FLAG_HIDDEN);
+                        memset(board_2048, 0, sizeof(board_2048));
+                        current_score = 0;
+                        can_undo = false;
+                        add_random_2048();
+                        add_random_2048();
+                        update_2048_ui();
+                    } else if (game_state_2048 == STATE_PLAYING)
+                        undo_2048();
+                    else if (game_state_2048 == STATE_GAMEOVER) {
+                        game_state_2048 = STATE_PLAYING;
+                        if (overlay_2048)
+                            lv_obj_add_flag(overlay_2048, LV_OBJ_FLAG_HIDDEN);
+                        memset(board_2048, 0, sizeof(board_2048));
+                        current_score = 0;
+                        can_undo = false;
+                        add_random_2048();
+                        add_random_2048();
+                        update_2048_ui();
                     }
-
-                    lv_label_set_text_fmt(space_score_label, "S:%d  B:%d", space_score,
-                                          space_best_score);
-                    ESP_LOGI("Space", "太空侵略者 出發！");
-                }
-            } else if (game_menu_selection == 3) {
-                // ==================== Breakout 按鍵邏輯 ====================
-                if (bk_game_state == BK_STATE_START || bk_game_state == BK_STATE_GAMEOVER) {
-                    bk_game_state = BK_STATE_PLAYING;
-                    if (bk_overlay)
-                        lv_obj_add_flag(bk_overlay, LV_OBJ_FLAG_HIDDEN);
-                    init_breakout_level(true);  // 新遊戲
-                    lv_label_set_text_fmt(bk_score_label, "L:%d  S:%d", bk_level, bk_score);
-                    ESP_LOGI("Breakout", "打磚塊 出發！");
-                } else if (bk_game_state == BK_STATE_PLAYING) {
-                    // 如果球還沒發射，按一下螢幕發射！
-                    if (!bk_ball_launched) {
-                        bk_ball_launched = true;
-                        ESP_LOGI("Breakout", "發射！");
+                } else if (game_menu_selection == GAME_SNAKE) {
+                    if (snake_game_state == SNAKE_STATE_START) {
+                        snake_game_state = SNAKE_STATE_PLAYING;
+                        if (snake_overlay)
+                            lv_obj_add_flag(snake_overlay, LV_OBJ_FLAG_HIDDEN);
+                        snake_init_game();
+                        update_snake_ui();
+                    } else if (snake_game_state == SNAKE_STATE_PLAYING) {
+                        snake_game_state = SNAKE_STATE_PAUSE;
+                        lv_label_set_text_fmt(snake_overlay_label, "Paused\nScore:\n%d",
+                                              snake_score);
+                        lv_obj_remove_flag(snake_overlay, LV_OBJ_FLAG_HIDDEN);
+                    } else if (snake_game_state == SNAKE_STATE_PAUSE) {
+                        snake_game_state = SNAKE_STATE_PLAYING;
+                        if (snake_overlay)
+                            lv_obj_add_flag(snake_overlay, LV_OBJ_FLAG_HIDDEN);
+                    } else if (snake_game_state == SNAKE_STATE_GAMEOVER) {
+                        snake_game_state = SNAKE_STATE_PLAYING;
+                        if (snake_overlay)
+                            lv_obj_add_flag(snake_overlay, LV_OBJ_FLAG_HIDDEN);
+                        snake_init_game();
+                        update_snake_ui();
                     }
-                }
-            } else if (game_menu_selection == 4) {
-                // 2048 按鍵邏輯 (保留原樣)
-                if (game_state_2048 == STATE_START_SCREEN) {
-                    game_state_2048 = STATE_PLAYING;
-                    if (overlay_2048)
-                        lv_obj_add_flag(overlay_2048, LV_OBJ_FLAG_HIDDEN);
-                    memset(board_2048, 0, sizeof(board_2048));
-                    current_score = 0;
-                    can_undo = false;
-                    add_random_2048();
-                    add_random_2048();
-                    update_2048_ui();
-                    ESP_LOGI("2048", "遊戲正式開始！");
-                } else if (game_state_2048 == STATE_PLAYING) {
-                    undo_2048();
-                } else if (game_state_2048 == STATE_GAMEOVER) {
-                    game_state_2048 = STATE_PLAYING;
-                    if (overlay_2048)
-                        lv_obj_add_flag(overlay_2048, LV_OBJ_FLAG_HIDDEN);
-                    memset(board_2048, 0, sizeof(board_2048));
-                    current_score = 0;
-                    can_undo = false;
-                    add_random_2048();
-                    add_random_2048();
-                    update_2048_ui();
-                    ESP_LOGI("2048", "重新開局！");
-                }
-            } else if (game_menu_selection == 5) {
-                // ==================== 貪食蛇 按鍵完整控制 ====================
-                if (snake_game_state == SNAKE_STATE_START) {
-                    // 1. 開始遊戲
-                    snake_game_state = SNAKE_STATE_PLAYING;
-                    if (snake_overlay)
-                        lv_obj_add_flag(snake_overlay, LV_OBJ_FLAG_HIDDEN);
-                    snake_init_game();
-                    update_snake_ui();
-                } else if (snake_game_state == SNAKE_STATE_PLAYING) {
-                    // 2. 遊玩中短按：暫停遊戲
-                    snake_game_state = SNAKE_STATE_PAUSE;
-                    lv_label_set_text_fmt(snake_overlay_label,
-                                          "PAUSED\n\nSCORE: %d\n\n[CLICK RESUME]", snake_score);
-                    lv_obj_remove_flag(snake_overlay, LV_OBJ_FLAG_HIDDEN);
-                } else if (snake_game_state == SNAKE_STATE_PAUSE) {
-                    // 3. 暫停中短按：繼續遊玩
-                    snake_game_state = SNAKE_STATE_PLAYING;
-                    if (snake_overlay)
-                        lv_obj_add_flag(snake_overlay, LV_OBJ_FLAG_HIDDEN);
-                } else if (snake_game_state == SNAKE_STATE_GAMEOVER) {
-                    // 4. 撞牆後短按：重新開局
-                    snake_game_state = SNAKE_STATE_PLAYING;
-                    if (snake_overlay)
-                        lv_obj_add_flag(snake_overlay, LV_OBJ_FLAG_HIDDEN);
-                    snake_init_game();
-                    update_snake_ui();
                 }
             }
         }
@@ -2428,7 +3562,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     }
 
     // --- 擲杯滾動動畫引擎 ---
-    if (current_ui_mode == 2 && game_menu_selection == 0 && bwa_roll_anim_ticks > 0) {
+    if (current_ui_mode == 5 && app_menu_selection == APP_BWA && bwa_roll_anim_ticks > 0) {
         bwa_roll_anim_ticks--;
 
         // 滾動期間不斷變換顏色 (木色/紅色閃爍)
@@ -2455,13 +3589,75 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     }
 
     // ==============================================
+    // 計時器 (Timer) 與 碼表 (Stopwatch) 高精度引擎
+    // ==============================================
+    if (current_ui_mode == 5) {
+        if (app_menu_selection == APP_TIMER || app_menu_selection == APP_STOPWATCH) {
+            if (Application::GetInstance().GetDeviceState() == kDeviceStateListening) {
+                Application::GetInstance().SetDeviceState(kDeviceStateIdle);
+            }
+        }
+
+        if (app_menu_selection == APP_TIMER) {
+            int64_t current_remain = timer_remain_us;
+            if (timer_state == TIMER_RUNNING) {
+                current_remain = timer_end_time_us - esp_timer_get_time();
+                if (current_remain <= 0) {
+                    current_remain = 0;
+                    timer_state = TIMER_ALARM;
+
+                    // 改變狀態標籤為白字，以免被紅色背景吃掉
+                    lv_label_set_text(timer_status_label, "TIME'S UP!");
+                    lv_obj_set_style_text_color(timer_status_label, lv_color_white(), 0);
+                    ESP_LOGI("Timer", "計時時間到！觸發警報");
+                }
+            }
+            if (timer_state != TIMER_ALARM) {
+                int total_s = current_remain / 1000000;
+                int m = total_s / 60;
+                int s = total_s % 60;
+                // 取得 00~99 的毫秒百分位
+                int centi_sec = (current_remain % 1000000) / 10000;
+
+                lv_label_set_text_fmt(timer_time_label, "%02d:%02d", m, s);
+                lv_label_set_text_fmt(timer_ms_label, "%02d", centi_sec);
+            } else {
+                // 紅白閃爍警告
+                static bool blink = false;
+                blink = !blink;
+                lv_obj_set_style_bg_color(bg_timer,
+                                          blink ? lv_color_hex(0xFF0000) : lv_color_black(), 0);
+
+                // 確保文字一律保持白色，在紅黑背景上都能看清楚
+                lv_obj_set_style_text_color(timer_time_label, lv_color_white(), 0);
+                lv_obj_set_style_text_color(timer_ms_label, lv_color_white(), 0);
+
+                lv_label_set_text(timer_time_label, "00:00");
+                lv_label_set_text(timer_ms_label, "00");
+            }
+        } else if (app_menu_selection == APP_STOPWATCH) {
+            int64_t current_elapsed = sw_accumulated_us;
+            if (sw_state == SW_RUNNING) {
+                current_elapsed = esp_timer_get_time() - sw_start_time_us;
+            }
+
+            int total_s = current_elapsed / 1000000;
+            int m = total_s / 60;
+            int s = total_s % 60;
+            int centi_sec = (current_elapsed % 1000000) / 10000;  // 00~99
+
+            lv_label_set_text_fmt(sw_time_label, "%02d:%02d", m, s);
+            lv_label_set_text_fmt(sw_ms_label, "%02d", centi_sec);
+        }
+    }
+
+    // ==============================================
     // 太空侵略者 (Space) 遊戲核心引擎
     // ==============================================
-    if (current_ui_mode == 2 && game_menu_selection == 2 &&
+    if (current_ui_mode == 2 && game_menu_selection == GAME_SPACE &&
         space_game_state == SPACE_STATE_PLAYING) {
         static int space_fire_tick = 0;
         static int space_alien_tick = 0;
-        static int alien_speed = 10;  // 外星人移動速度 (數值越小越快)
 
         bool game_over = false;
         int active_aliens = 0;
@@ -2506,7 +3702,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         for (int i = 0; i < SPACE_MAX_BULLETS; i++) {
             if (!space_bullets[i].active)
                 continue;
-            for (int r = 0; r < SPACE_ALIEN_ROWS; r++) {
+            for (int r = 0; r < space_active_rows; r++)  // 改為 space_active_rows
+            {
                 for (int c = 0; c < SPACE_ALIEN_COLS; c++) {
                     if (!space_aliens[r][c].active)
                         continue;
@@ -2515,8 +3712,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                     int ay = alien_group_y + r * 15;
 
                     // 簡單的 AABB 碰撞算法 (子彈 4x8，外星人 10x10)
-                    if (space_bullets[i].x < ax + 10 && space_bullets[i].x + 4 > ax &&
-                        space_bullets[i].y < ay + 10 && space_bullets[i].y + 8 > ay) {
+                    if (space_bullets[i].x < ax + SPACE_ALIEN_W && space_bullets[i].x + 4 > ax &&
+                        space_bullets[i].y < ay + SPACE_ALIEN_H && space_bullets[i].y + 8 > ay) {
                         // 擊殺成功！
                         space_aliens[r][c].active = false;
                         lv_obj_add_flag(space_aliens[r][c].obj, LV_OBJ_FLAG_HIDDEN);
@@ -2533,24 +3730,59 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         }
 
         // ------------------------------------------
-        // 2.5 外星人投擲炸彈 (360分之後開啟)
+        // 2.5 【全新平衡飛彈系統】：循序漸進的難度
         // ------------------------------------------
-        if (space_score >= 240) {
-            // 每 100ms 有 5% 機率投彈 (平均每 2 秒一顆，頻率極低不刁難)
-            if (esp_random() % 100 < 8) {
+        int max_allowed_bombs = 0;
+        int drop_chance = 0;
+
+        if (space_level == 1) {
+            // 第 1 關：極度溫和，最多 1 顆，機率極低
+            max_allowed_bombs = 1;
+            drop_chance = 1;
+        } else if (space_level == 2) {
+            // 第 2 關：微幅提升，最多 2 顆
+            max_allowed_bombs = 2;
+            drop_chance = 3;
+        } else {
+            // 第 3 關起：難度開始爆發
+            max_allowed_bombs = space_level;
+            if (max_allowed_bombs > SPACE_MAX_BOMBS)
+                max_allowed_bombs = SPACE_MAX_BOMBS;  // 上限 8 顆
+            drop_chance = space_level * 2;
+            if (drop_chance > 15)
+                drop_chance = 15;  // 機率最高鎖定在 15% (否則會變彈幕地獄)
+        }
+
+        // 【新手保護期】：第一關如果分數還沒超過 50
+        // 分，絕對不掉任何飛彈，讓玩家安心適應體感操作！
+        if (space_level == 1 && space_score < 50) {
+            max_allowed_bombs = 0;
+        }
+
+        // 接著計算目前畫面上已經有幾顆飛彈...
+        int active_bombs = 0;
+        for (int i = 0; i < SPACE_MAX_BOMBS; i++) {
+            if (space_bombs[i].active)
+                active_bombs++;
+        }
+
+        // 如果畫面上的飛彈還沒達到當前關卡上限，嘗試投彈
+        if (active_bombs < max_allowed_bombs) {
+            if (esp_random() % 100 < drop_chance) {
                 for (int i = 0; i < SPACE_MAX_BOMBS; i++) {
                     if (!space_bombs[i].active) {
-                        // 隨機挑選一隻存活的外星人投彈
-                        int r = esp_random() % SPACE_ALIEN_ROWS;
+                        // 隨機選取存活外星人發射飛彈
+                        int r = esp_random() % space_active_rows;
                         int c = esp_random() % SPACE_ALIEN_COLS;
                         if (space_aliens[r][c].active) {
                             space_bombs[i].active = true;
-                            space_bombs[i].x = alien_group_x + 15 + c * 25 + 2;  // 對齊外星人中心
-                            space_bombs[i].y = alien_group_y + r * 15 + 10;
+                            space_bombs[i].x =
+                                alien_group_x + 15 + c * 25 + (SPACE_ALIEN_W / 2 - 2);
+                            space_bombs[i].y = alien_group_y + r * 15 + SPACE_ALIEN_H;
                             lv_obj_remove_flag(space_bombs[i].obj, LV_OBJ_FLAG_HIDDEN);
                             lv_obj_align(space_bombs[i].obj, LV_ALIGN_TOP_LEFT, space_bombs[i].x,
                                          space_bombs[i].y);
-                            break;  // 每次只投一顆
+                            break;
                         }
                     }
                 }
@@ -2590,12 +3822,16 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             int min_x = 128;
 
             // 計算外星人陣型的真實邊界
-            for (int r = 0; r < SPACE_ALIEN_ROWS; r++) {
+            for (int r = 0; r < space_active_rows; r++)  // ★確保這裡是 space_active_rows
+            {
                 for (int c = 0; c < SPACE_ALIEN_COLS; c++) {
                     if (space_aliens[r][c].active) {
                         active_aliens++;
                         int ax = alien_group_x + 15 + c * 25;
+
+                        // ★ 檢查1：這裡必須是 alien_group_y！
                         int ay = alien_group_y + r * 15;
+
                         if (ax > max_x)
                             max_x = ax;
                         if (ax < min_x)
@@ -2607,20 +3843,50 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             }
 
             if (active_aliens == 0) {
-                // 【全部清空】進入下一關！速度變快！
+                // ==========================================
+                // 【全部清空】進入下一關！
+                // ==========================================
+                space_level++;
+                space_descent_timer = 0;  // 過關重置下移計時器
+
+                // 【核心算法】：每過 3 關增加 1 排，最多 6 排！
+                // Level 1~3: 3排 | Level 4~6: 4排 | Level 7~9: 5排 | Level 10+: 6排
+                space_active_rows = 3 + (space_level - 1) / 3;
+                if (space_active_rows > SPACE_MAX_ALIEN_ROWS) {
+                    space_active_rows = SPACE_MAX_ALIEN_ROWS;
+                }
+
                 alien_group_x = 0;
-                alien_group_y = 20;
-                if (alien_speed > 2)
-                    alien_speed -= 2;
-                for (int r = 0; r < SPACE_ALIEN_ROWS; r++) {
+                alien_group_y = SPACE_ALIEN_START_Y;  // 重置回 50
+
+                // 每次過關適度加速
+                if (alien_speed > 3) {
+                    alien_speed -= 1;
+                }
+
+                // 重新佈陣敵人
+                for (int r = 0; r < SPACE_MAX_ALIEN_ROWS; r++) {
                     for (int c = 0; c < SPACE_ALIEN_COLS; c++) {
-                        space_aliens[r][c].active = true;
-                        lv_obj_remove_flag(space_aliens[r][c].obj, LV_OBJ_FLAG_HIDDEN);
+                        if (r < space_active_rows) {
+                            space_aliens[r][c].active = true;
+                            lv_obj_remove_flag(space_aliens[r][c].obj, LV_OBJ_FLAG_HIDDEN);
+                            lv_obj_align(space_aliens[r][c].obj, LV_ALIGN_TOP_LEFT, 15 + c * 25,
+                                         SPACE_ALIEN_START_Y + r * 15);
+                        } else {
+                            space_aliens[r][c].active = false;
+                            lv_obj_add_flag(space_aliens[r][c].obj, LV_OBJ_FLAG_HIDDEN);
+                        }
                     }
                 }
+
+                lv_label_set_text_fmt(space_score_label, "L:%d S:%d B:%d", space_level, space_score,
+                                      space_best_score);
+                ESP_LOGI("Space", "★ 通關！進入第 %d 關，敵人增加至 %d 排！", space_level,
+                         space_active_rows);
+
             } else {
                 // 碰壁轉向與向下逼近
-                if (alien_dir == 1 && max_x + 10 >= (LCD_W - 4)) {  // 124
+                if (alien_dir == 1 && max_x + SPACE_ALIEN_W >= (LCD_W - 4)) {  // 124
                     alien_dir = -1;
                     alien_group_y += 8;
                 } else if (alien_dir == -1 && min_x <= 4) {
@@ -2631,11 +3897,11 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 }
 
                 // 【Game Over 判定】外星人是否碰到底部？
-                if (bottom_alien_y + 10 >= 110) {
+                if (bottom_alien_y + SPACE_ALIEN_H >= 110) {
                     game_over = true;
                 } else {
                     // 更新所有存活外星人的畫面位置
-                    for (int r = 0; r < SPACE_ALIEN_ROWS; r++) {
+                    for (int r = 0; r < space_active_rows; r++) {
                         for (int c = 0; c < SPACE_ALIEN_COLS; c++) {
                             if (space_aliens[r][c].active) {
                                 lv_obj_align(space_aliens[r][c].obj, LV_ALIGN_TOP_LEFT,
@@ -2644,6 +3910,31 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                         }
                     }
                 }
+            }
+        }
+
+        // ------------------------------------------
+        // 【修復】：定時強制向下逼近一層（即時下移刷新）
+        // ------------------------------------------
+        // ★ 測試提醒：如果你想在第 1 關馬上看到效果，可以暫時把 >= 3 改成 >= 1 測試！
+        if (space_level >= 3) {
+            space_descent_timer++;
+            // 時間到了 (每 6 秒一次)
+            if (space_descent_timer >= (SPACE_DESCENT_INTERVAL_SEC * 10)) {
+                space_descent_timer = 0;
+                alien_group_y += SPACE_DESCENT_STEP_Y;  // 向下跨一整層 (15px)
+
+                // 【關鍵修復】：時間一到「立刻」強制更新所有存活外星人的座標！
+                for (int r = 0; r < space_active_rows; r++) {
+                    for (int c = 0; c < SPACE_ALIEN_COLS; c++) {
+                        if (space_aliens[r][c].active) {
+                            lv_obj_align(space_aliens[r][c].obj, LV_ALIGN_TOP_LEFT,
+                                         alien_group_x + 15 + c * 25, alien_group_y + r * 15);
+                        }
+                    }
+                }
+                ESP_LOGI("Space", "⚠️ 警報！第 %d 關敵人強制下推一層！當前 Y: %d", space_level,
+                         alien_group_y);
             }
         }
 
@@ -2659,8 +3950,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 save_space_best_score(space_best_score);
             }
 
-            lv_label_set_text_fmt(space_overlay_label, "GAME OVER\n\nSCORE: %d\n\n[CLICK]",
-                                  space_score);
+            lv_label_set_text_fmt(space_overlay_label, "GAME\nOVER\nScore:\n%d", space_score);
             lv_obj_remove_flag(space_overlay, LV_OBJ_FLAG_HIDDEN);
             ESP_LOGI("Space", "Game Over! 最終得分: %d", space_score);
         }
@@ -2669,11 +3959,12 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     // ==============================================
     // 打磚塊 (Breakout) 遊戲核心引擎
     // ==============================================
-    if (current_ui_mode == 2 && game_menu_selection == 3 && bk_game_state == BK_STATE_PLAYING) {
+    if (current_ui_mode == 2 && game_menu_selection == GAME_BREAKOUT &&
+        bk_game_state == BK_STATE_PLAYING) {
         if (!bk_ball_launched) {
             // 球還沒發射，黏在擋板上跟著移動！
             bk_ball_x = bk_paddle_x + (bk_paddle_w / 2) - 3;
-            bk_ball_y = 110;
+            bk_ball_y = LCD_H * 0.9 - 6;
         } else {
             // 1. 移動球體
             bk_ball_x += bk_ball_dx;
@@ -2690,8 +3981,24 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             }  // 128 - 6
             if (bk_ball_y <= 16) {
                 bk_ball_y = 16;
-                bk_ball_dy = -abs(bk_ball_dy);
+                bk_ball_dy = abs(bk_ball_dy);
             }  // 頂部保留給計分板
+
+            // ==========================================
+            // 【商業級防卡死保護】：防止球在頂部或橫向死循環
+            // ==========================================
+            static int anti_stuck_counter = 0;
+            anti_stuck_counter++;
+
+            // 如果球超過 8 秒 (80 次 tick) 都沒有回到擋板
+            if (anti_stuck_counter > 80) {
+                // 若球正往上飛或在頂部盤旋，強制讓它轉為向下
+                if (bk_ball_dy < 0) {
+                    bk_ball_dy = abs(bk_ball_dy);
+                }
+                anti_stuck_counter = 0;
+                ESP_LOGI("Breakout", "觸發防卡死看門狗，引導球向下！");
+            }
 
             // 3. 掉落底部 (Game Over)
             if (bk_ball_y >= LCD_H) {
@@ -2700,15 +4007,15 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                     bk_best_score = bk_score;
                     save_bk_best_score(bk_best_score);
                 }
-                lv_label_set_text_fmt(bk_overlay_label, "GAME OVER\n\nSCORE: %d\n\n[CLICK]",
-                                      bk_score);
+                lv_label_set_text_fmt(bk_overlay_label, "GAME\nOVER\nScore:\n%d", bk_score);
                 lv_obj_remove_flag(bk_overlay, LV_OBJ_FLAG_HIDDEN);
             }
 
             // 4. 擋板碰撞反彈 (球寬高 6)
             if (bk_ball_y + 6 >= LCD_H * 0.9 && bk_ball_y < LCD_H * 0.9 + 4 && bk_ball_dy > 0) {
                 if (bk_ball_x + 6 >= bk_paddle_x && bk_ball_x <= bk_paddle_x + bk_paddle_w) {
-                    bk_ball_dy = -abs(bk_ball_dy);  // 強制向上反彈
+                    bk_ball_dy = -abs(bk_ball_dy);  // 向上反彈
+                    anti_stuck_counter = 0;         // ★ 成功接球，看門狗計時重置！
                     // 根據擊中擋板的位置，改變球的橫向軌跡 (增加遊戲性)
                     int hit_pos = (bk_ball_x + 3) - (bk_paddle_x + (bk_paddle_w / 2));
                     if (hit_pos < -3)
@@ -2722,13 +4029,13 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             int remaining_bricks = 0;
             bool hit_brick = false;
 
-            for (int r = 0; r < BK_ROWS; r++) {
+            for (int r = 0; r < bk_active_rows; r++) {
                 for (int c = 0; c < BK_COLS; c++) {
                     if (bk_bricks_active[r][c]) {
                         remaining_bricks++;
                         if (!hit_brick) {
-                            int brx = 2 + c * 25;
-                            int bry = 18 + r * 10;
+                            int brx = BK_BRICK_START_X + c * BK_BRICK_W;
+                            int bry = BK_BRICK_START_Y + r * BK_BRICK_STEP_Y;
                             // AABB 碰撞 (球寬高 6)
                             if (bk_ball_x < brx + 23 && bk_ball_x + 6 > brx &&
                                 bk_ball_y < bry + 8 && bk_ball_y + 6 > bry) {
@@ -2783,6 +4090,9 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             CustomApp_SetEmotion(random_emotions[rand_idx]);
             ESP_LOGI("Touch", "隨機展示表情: %s (idx: %d/%d)", random_emotions[rand_idx], rand_idx,
                      total_emotions);
+            auto backlight = Board::GetInstance().GetBacklight();
+            if (backlight)
+                backlight->SetBrightness(100);
         }
 
         pending_touch_wake = pending_touch_wake - 1;
@@ -2803,17 +4113,26 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     // 1. 自動進入時間模式，閒置計時器：只要處於待機 (Idle)，每次 tick (100ms) 都要累加
     if (current_state == kDeviceStateIdle) {
         idle_to_clock_counter++;
-        if (idle_to_clock_counter >= 6000) {  // 6000 * 100ms = 60 秒 = 5 分鐘
+        // 🌟 核心修改：判斷目前是不是塔羅模式
+        // 如果是，設定為 9000 (15分鐘)；如果不是，設定為 1800 (3分鐘)
+        int timeout_limit = is_tarot_mode ? 9000 : 1800;
+
+        if (idle_to_clock_counter >= timeout_limit) {
             idle_to_clock_counter = 0;
-            ESP_LOGI("System", "1 分鐘無操作，自動進入時鐘待機模式");
+            if (is_tarot_mode) {
+                ESP_LOGI("System", "15 分鐘無操作，自動進入時鐘待機模式");
+                is_tarot_mode = false;  // 超時後自動解除塔羅模式鎖定
+            } else {
+                ESP_LOGI("System", "3 分鐘無操作，自動進入時鐘待機模式");
+            }
 
             current_system_mode = 3;
             current_ui_mode = 3;
             ui_mode_changed = true;
 
-            // 將背光降至 5% (極致省電)
+            // 將背光降至 2% (極致省電)
             if (backlight)
-                backlight->SetBrightness(5);
+                backlight->SetBrightness(100);
             return;  // 立即跳轉，不執行後續
         }
     } else {
@@ -2835,10 +4154,10 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     if (current_state == kDeviceStateListening) {
         lv_obj_set_size(avatar_left_eye, EYE_BASE_W, EYE_BASE_H);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H);
-        lv_obj_set_style_radius(avatar_left_eye, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);
         lv_obj_set_size(avatar_right_eye, EYE_BASE_W, EYE_BASE_W);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H);
-        lv_obj_set_style_radius(avatar_right_eye, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);
         lv_obj_set_size(avatar_mouth, MOUTH_BASE_W - 4, MOUTH_BASE_H);
         lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
@@ -2856,9 +4175,9 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 lv_obj_add_flag(avatar_mouth_happy, LV_OBJ_FLAG_HIDDEN);
             set_eye_size(EYE_BASE_W, EYE_BASE_H);
             lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H);
-            lv_obj_set_style_radius(avatar_left_eye, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);
             lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H);
-            lv_obj_set_style_radius(avatar_right_eye, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);
             lv_obj_remove_flag(avatar_mouth, LV_OBJ_FLAG_HIDDEN);
             lv_obj_set_size(avatar_mouth, MOUTH_BASE_W - 4, MOUTH_BASE_H);
             lv_obj_set_style_radius(avatar_mouth, 8, 0);
@@ -2882,12 +4201,15 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
     } else {  // 進入待機狀態 (首次切換進來時執行一次)
         if (backlight)
-            backlight->SetBrightness(10);
+            backlight->SetBrightness(100);
+
+        clock_is_bright = true;
+        clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
 
         current_active_emotion = "neutral";  // 重置回普通待機
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
-        lv_obj_set_style_radius(avatar_left_eye, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_radius(avatar_right_eye, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);
+        lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);
 
         lv_obj_remove_flag(avatar_mouth, LV_OBJ_FLAG_HIDDEN);
         if (avatar_sad_eye)
@@ -2939,28 +4261,65 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     setenv("TZ", "HKT-8", 1);
     tzset();
 
-    avatar_theme_bg_color = lv_obj_get_style_bg_color(parent, LV_PART_MAIN);
-    avatar_theme_color = lv_obj_get_style_text_color(parent, LV_PART_MAIN);
-
-    // lv_obj_set_style_bg_color(parent, avatar_theme_bg_color, 0);
+    avatar_theme_bg_color = lv_obj_get_style_bg_color(parent, LV_PART_MAIN);  // 白色
+    // avatar_theme_color = lv_obj_get_style_text_color(parent, LV_PART_MAIN); //黑色
+    lv_obj_set_style_text_color(parent, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
+    avatar_theme_color = lv_color_make(255, 100, 0);
+
+    // ==============================================
+    // 【新增】建立一個臉部總容器，用來做重力跟隨移動
+    // ==============================================
+    face_container = lv_obj_create(parent);
+    lv_obj_set_size(face_container, LCD_W, LCD_H);
+    lv_obj_set_style_bg_opa(face_container, LV_OPA_TRANSP, 0);  // 容器必須透明
+    lv_obj_set_style_border_width(face_container, 0, 0);
+    lv_obj_set_style_pad_all(face_container, 0, 0);
+    lv_obj_clear_flag(face_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(face_container, LV_ALIGN_CENTER, 0, 0);
 
     // 設定眼睛和嘴巴的初始位置
-    avatar_left_eye = lv_obj_create(parent);
+    avatar_left_eye = lv_obj_create(face_container);
     lv_obj_set_size(avatar_left_eye, EYE_BASE_W, EYE_BASE_H);
-    lv_obj_set_style_radius(avatar_left_eye, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);
     lv_obj_set_style_bg_color(avatar_left_eye, avatar_theme_color, 0);
+    lv_obj_set_style_pad_all(avatar_left_eye, 0, 0);
+    lv_obj_set_style_border_width(avatar_left_eye, 0, 0);
     lv_obj_clear_flag(avatar_left_eye, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H);
 
-    avatar_right_eye = lv_obj_create(parent);
+    left_eye_highlight = lv_obj_create(avatar_left_eye);
+    // 【修改 1】使用百分比：寬度佔眼睛 35%，高度佔 40% (不管眼睛怎麼縮放，高光自動跟著縮放！)
+    lv_obj_set_size(left_eye_highlight, lv_pct(40), lv_pct(40));
+    lv_obj_set_style_bg_color(left_eye_highlight, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(left_eye_highlight, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(left_eye_highlight, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(left_eye_highlight, 0, 0);
+    // 【修改 2】對齊右上角，稍微往內縮 (X: -2, Y: 2) 會更有神
+    lv_obj_align(left_eye_highlight, LV_ALIGN_TOP_RIGHT, -2, 4);
+    lv_obj_clear_flag(left_eye_highlight, LV_OBJ_FLAG_SCROLLABLE);
+
+    avatar_right_eye = lv_obj_create(face_container);
     lv_obj_set_size(avatar_right_eye, EYE_BASE_W, EYE_BASE_H);
-    lv_obj_set_style_radius(avatar_right_eye, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);
     lv_obj_set_style_bg_color(avatar_right_eye, avatar_theme_color, 0);
+    lv_obj_set_style_pad_all(avatar_right_eye, 0, 0);
+    lv_obj_set_style_border_width(avatar_right_eye, 0, 0);
     lv_obj_clear_flag(avatar_right_eye, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H);
 
-    avatar_mouth = lv_obj_create(parent);
+    right_eye_highlight = lv_obj_create(avatar_right_eye);
+    // 同樣設定為百分比
+    lv_obj_set_size(right_eye_highlight, lv_pct(40), lv_pct(40));
+    lv_obj_set_style_bg_color(right_eye_highlight, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(right_eye_highlight, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(right_eye_highlight, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(right_eye_highlight, 0, 0);
+    // 右眼也是對齊右上角 (高光的反光方向通常要一致，才像同一個光源)
+    lv_obj_align(right_eye_highlight, LV_ALIGN_TOP_RIGHT, -2, 4);
+    lv_obj_clear_flag(right_eye_highlight, LV_OBJ_FLAG_SCROLLABLE);
+
+    avatar_mouth = lv_obj_create(face_container);
     lv_obj_set_size(avatar_mouth, MOUTH_BASE_W, MOUTH_BASE_H);
     lv_obj_set_style_radius(avatar_mouth, 8, 0);
     lv_obj_set_style_bg_color(avatar_mouth, avatar_theme_color, 0);
@@ -2970,7 +4329,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // ==============================================
     // sad eye
     // ==============================================
-    avatar_sad_eye = lv_obj_create(parent);
+    avatar_sad_eye = lv_obj_create(face_container);
     lv_obj_set_size(avatar_sad_eye, LCD_W, LCD_H);
     lv_obj_set_style_bg_opa(avatar_sad_eye, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(avatar_sad_eye, 0, 0);
@@ -3015,7 +4374,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // ==============================================
     // surprised eye
     // ==============================================
-    avatar_surprised_eye = lv_obj_create(parent);
+    avatar_surprised_eye = lv_obj_create(face_container);
     lv_obj_set_size(avatar_surprised_eye, LCD_W, 12);
     lv_obj_set_style_bg_opa(avatar_surprised_eye, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(avatar_surprised_eye, 0, 0);
@@ -3062,7 +4421,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // ==============================================
     // angry eye
     // ==============================================
-    avatar_angry_eye = lv_obj_create(parent);
+    avatar_angry_eye = lv_obj_create(face_container);
     lv_obj_set_size(avatar_angry_eye, LCD_W, LCD_H);
     lv_obj_set_style_bg_opa(avatar_angry_eye, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(avatar_angry_eye, 0, 0);
@@ -3107,7 +4466,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // 建立「大哭 (Crying)」的藍色眼淚 (😭)
     // ==============================================
     // 1. 建立透明母圖層
-    avatar_tears = lv_obj_create(parent);
+    avatar_tears = lv_obj_create(face_container);
     lv_obj_set_size(avatar_tears, LCD_W, LCD_H);
     lv_obj_set_style_bg_opa(avatar_tears, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(avatar_tears, 0, 0);
@@ -3143,7 +4502,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // 建立「口水 (swallow)」
     // ==============================================
     // 1. 建立透明母圖層
-    avatar_swallow = lv_obj_create(parent);
+    avatar_swallow = lv_obj_create(face_container);
     lv_obj_set_size(avatar_swallow, LCD_W, LCD_H);
     lv_obj_set_style_bg_opa(avatar_swallow, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(avatar_swallow, 0, 0);
@@ -3168,7 +4527,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // ==============================================
     // 建立Confuse眼睛
     // ==============================================
-    avatar_confuse = lv_obj_create(parent);
+    avatar_confuse = lv_obj_create(face_container);
     lv_obj_set_size(avatar_confuse, LCD_W, 10);
     lv_obj_set_style_bg_opa(avatar_confuse, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(avatar_confuse, 0, 0);
@@ -3197,7 +4556,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // ==============================================
     // 建立cool的表情
     // ==============================================
-    avatar_cool = lv_obj_create(parent);
+    avatar_cool = lv_obj_create(face_container);
     lv_obj_set_size(avatar_cool, LCD_W, LCD_H);
     lv_obj_set_style_bg_opa(avatar_cool, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(avatar_cool, 0, 0);
@@ -3263,7 +4622,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // 建立開口笑嘴巴 (laughing)
     // ==============================================
     // 1. 父容器 (高度只有 30px，超出部分會被自動裁切)
-    avatar_mouth_laugh = lv_obj_create(parent);
+    avatar_mouth_laugh = lv_obj_create(face_container);
     lv_obj_set_size(avatar_mouth_laugh, 28, 30);
     lv_obj_set_style_bg_opa(avatar_mouth_laugh, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(avatar_mouth_laugh, 0, 0);
@@ -3295,7 +4654,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // ==============================================
     // 建立silly舌頭
     // ==============================================
-    avatar_silly_tongue = lv_obj_create(parent);
+    avatar_silly_tongue = lv_obj_create(face_container);
     lv_obj_set_size(avatar_silly_tongue, 16, 18);
     lv_obj_set_style_bg_opa(avatar_silly_tongue, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(avatar_silly_tongue, 0, 0);
@@ -3317,7 +4676,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // ==============================================
     // 建立 Zzz 容器 (放在螢幕左上方)
     // ==============================================
-    avatar_sleepy_z = lv_obj_create(parent);
+    avatar_sleepy_z = lv_obj_create(face_container);
     lv_obj_set_size(avatar_sleepy_z, 22, 22);
     lv_obj_set_style_bg_opa(avatar_sleepy_z, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(avatar_sleepy_z, 0, 0);
@@ -3347,7 +4706,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // 建立開口笑嘴巴 (半圓) happy
     // ==============================================
     // 1. 外層父容器：寬度設為半徑的 2 倍，高度設為半徑 (等於只露出下半部)
-    avatar_mouth_happy = lv_obj_create(parent);
+    avatar_mouth_happy = lv_obj_create(face_container);
     lv_obj_set_size(avatar_mouth_happy, 24, 19);                    // 寬 38，高 19 (剛好半圓比例)
     lv_obj_set_style_bg_opa(avatar_mouth_happy, LV_OPA_TRANSP, 0);  // 容器本身透明
     lv_obj_set_style_border_width(avatar_mouth_happy, 0, 0);
@@ -3369,7 +4728,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // ==============================================
     // embrassing face
     // ==============================================
-    avatar_embrassing = lv_obj_create(parent);
+    avatar_embrassing = lv_obj_create(face_container);
     lv_obj_set_size(avatar_embrassing, LCD_W, 12);
     lv_obj_set_style_bg_opa(avatar_embrassing, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(avatar_embrassing, 0, 0);
@@ -3383,7 +4742,8 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     lv_obj_t* embrassing_left = lv_obj_create(avatar_embrassing);
     lv_obj_set_size(embrassing_left, 16, 12);
     lv_obj_set_style_radius(embrassing_left, LV_RADIUS_CIRCLE, 0);  // 橢圓形
-    lv_obj_set_style_bg_color(embrassing_left, blush_pink, 0);   // 【關鍵】實體顏色設定在子物件上
+    lv_obj_set_style_bg_color(embrassing_left, blush_pink,
+                              0);                                // 【關鍵】實體顏色設定在子物件上
     lv_obj_set_style_bg_opa(embrassing_left, LV_OPA_COVER, 20);  // 100% 不透明
     lv_obj_set_style_border_width(embrassing_left, 0, 0);
     lv_obj_clear_flag(embrassing_left, LV_OBJ_FLAG_SCROLLABLE);
@@ -3394,7 +4754,8 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     lv_obj_t* embrassing_right = lv_obj_create(avatar_embrassing);
     lv_obj_set_size(embrassing_right, 16, 12);
     lv_obj_set_style_radius(embrassing_right, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(embrassing_right, blush_pink, 0);  // 【關鍵】實體顏色設定在子物件上
+    lv_obj_set_style_bg_color(embrassing_right, blush_pink,
+                              0);  // 【關鍵】實體顏色設定在子物件上
     lv_obj_set_style_bg_opa(embrassing_right, LV_OPA_COVER, 20);
     lv_obj_set_style_border_width(embrassing_right, 0, 0);
     lv_obj_clear_flag(embrassing_right, LV_OBJ_FLAG_SCROLLABLE);
@@ -3407,7 +4768,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // ==============================================
     // 建立左額頭汗線 (|||)
     // ==============================================
-    avatar_sweat = lv_obj_create(parent);
+    avatar_sweat = lv_obj_create(face_container);
     lv_obj_set_size(avatar_sweat, 20, 20);
     lv_obj_set_style_bg_opa(avatar_sweat, LV_OPA_TRANSP, 0);  // 透明背景容器
     lv_obj_set_style_border_width(avatar_sweat, 0, 0);
@@ -3432,7 +4793,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // ==============================================
     // 建立右上角向量愛心 (♥)
     // ==============================================
-    avatar_heart = lv_obj_create(parent);
+    avatar_heart = lv_obj_create(face_container);
     lv_obj_set_size(avatar_heart, 22, 22);
     lv_obj_set_style_bg_opa(avatar_heart, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(avatar_heart, 0, 0);
@@ -3478,7 +4839,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // ==============================================
     // 建立右邊咀愛心 (♥)
     // ==============================================
-    avatar_kissy = lv_obj_create(parent);
+    avatar_kissy = lv_obj_create(face_container);
     lv_obj_set_size(avatar_kissy, 22, 22);
     lv_obj_set_style_bg_opa(avatar_kissy, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(avatar_kissy, 0, 0);
@@ -3522,7 +4883,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // ==========================================
     // 【第 2 題】建立日系動漫「💢」生氣青筋符號
     // ==========================================
-    avatar_anger = lv_obj_create(parent);
+    avatar_anger = lv_obj_create(face_container);
     lv_obj_set_size(avatar_anger, 22, 22);
     lv_obj_set_style_bg_opa(avatar_anger, LV_OPA_TRANSP, 0);  // 透明容器
     lv_obj_set_style_border_width(avatar_anger, 0, 0);
@@ -3576,15 +4937,15 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     bus_route_label = lv_label_create(bg_bus);
     lv_obj_set_style_text_color(bus_route_label, lv_color_make(255, 200, 0), 0);  // 黃色路線
     lv_obj_set_style_text_font(bus_route_label, &lv_font_montserrat_28, 0);
-    lv_obj_align(bus_route_label, LV_ALIGN_TOP_MID, 0, 15);
+    lv_obj_align(bus_route_label, LV_ALIGN_CENTER, 0, -35);
 
     bus_t1_label = lv_label_create(bg_bus);
     lv_obj_set_style_text_color(bus_t1_label, lv_color_white(), 0);  // 白色時間
-    lv_obj_align(bus_t1_label, LV_ALIGN_CENTER, 0, 5);
+    lv_obj_align(bus_t1_label, LV_ALIGN_CENTER, 0, 0);
 
     bus_t2_label = lv_label_create(bg_bus);
     lv_obj_set_style_text_color(bus_t2_label, lv_color_hex(0xAAAAAA), 0);  // 灰色後班
-    lv_obj_align(bus_t2_label, LV_ALIGN_BOTTOM_MID, 0, -20);
+    lv_obj_align(bus_t2_label, LV_ALIGN_CENTER, 0, 25);
 
     lv_obj_add_flag(bg_bus, LV_OBJ_FLAG_HIDDEN);  // 預設隱藏
 
@@ -3593,17 +4954,19 @@ void CustomApp_InitUI(lv_obj_t* parent) {
 
     // 建立背景任務
     xTaskCreate(bus_fetch_task, "bus_task", 4096, NULL, 5, &bus_task_handle);
+    // 👇 加入這一行，啟動 IMU 背景初始化
+    xTaskCreate(imu_init_task, "imu_init_task", 4096, NULL, 5, NULL);
 }
 
 static void reset_avatar_geometry() {
     if (avatar_left_eye) {
         lv_obj_set_size(avatar_left_eye, EYE_BASE_W, EYE_BASE_H);
-        lv_obj_set_style_radius(avatar_left_eye, EYE_BASE_W / 2, 0);
+        lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H);  // 基準左眼
     }
     if (avatar_right_eye) {
         lv_obj_set_size(avatar_right_eye, EYE_BASE_W, EYE_BASE_H);
-        lv_obj_set_style_radius(avatar_right_eye, EYE_BASE_W / 2, 0);
+        lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H);  // 基準右眼
     }
     if (avatar_mouth) {
@@ -3622,6 +4985,8 @@ void CustomApp_SetEmotion(const char* emotion) {
         return;
     std::string emo_str(emotion);
     current_active_emotion = emo_str;  // 【關鍵】記錄當前表情
+    lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);
+    lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);
 
     // 1. 每次變換表情前，停止所有可能在跑的動畫
     lv_anim_del(avatar_mouth, NULL);
@@ -3671,6 +5036,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         lv_obj_add_flag(avatar_confuse, LV_OBJ_FLAG_HIDDEN);
     if (avatar_sleepy_z)
         lv_obj_add_flag(avatar_sleepy_z, LV_OBJ_FLAG_HIDDEN);
+    if (left_eye_highlight)
+        lv_obj_remove_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+    if (right_eye_highlight)
+        lv_obj_remove_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_remove_flag(avatar_mouth, LV_OBJ_FLAG_HIDDEN);
 
@@ -3685,6 +5054,11 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W - 2, 8);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
         lv_obj_set_size(avatar_mouth, 25, 12);
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
 
@@ -3716,6 +5090,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W, 10);  // 眼睛瞇起來哭
         // lv_obj_set_size(avatar_mouth, 20, 20);        // 嘴巴張大哭
         lv_obj_set_style_radius(avatar_mouth, 8, 0);  // 嘴巴帶點圓角
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
         if (avatar_mouth) {
             lv_obj_set_size(avatar_mouth, 20, 20);
@@ -3749,6 +5127,11 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W, 10);  // 眼睛瞇起來哭
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
         lv_obj_set_size(avatar_mouth, MOUTH_BASE_W, 20);  // 嘴巴張大哭
         lv_obj_set_style_radius(avatar_mouth, 8, 0);      // 嘴巴帶點圓角
 
@@ -3864,6 +5247,11 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W, 8);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
         lv_obj_set_size(avatar_mouth, 3, 3);
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
         if (avatar_embrassing) {
@@ -3884,6 +5272,11 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W, 8);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
         lv_obj_set_size(avatar_mouth, 1, 1);
         if (avatar_mouth_laugh) {
             lv_obj_remove_flag(avatar_mouth_laugh, LV_OBJ_FLAG_HIDDEN);
@@ -3912,10 +5305,16 @@ void CustomApp_SetEmotion(const char* emotion) {
         if (avatar_sad_eye) {
             lv_obj_remove_flag(avatar_sad_eye, LV_OBJ_FLAG_HIDDEN);
         }
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
     } else if (emo_str == "winking") {
         lv_obj_set_size(avatar_left_eye, EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_size(avatar_mouth, MOUTH_BASE_W - 4, MOUTH_BASE_H);
         lv_obj_set_size(avatar_right_eye, EYE_BASE_W, EYE_BASE_H);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
         // 執行單次閉眼動畫（不回彈，定格在 10px）
         lv_anim_del(avatar_right_eye, NULL);
@@ -3933,10 +5332,16 @@ void CustomApp_SetEmotion(const char* emotion) {
         lv_obj_set_size(avatar_mouth, 20, MOUTH_BASE_H);
         if (avatar_mouth_happy) {
             lv_obj_remove_flag(avatar_mouth_happy, LV_OBJ_FLAG_HIDDEN);
+            if (left_eye_highlight)
+                lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+            if (right_eye_highlight)
+                lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         }
     } else if (emo_str == "kissy") {
         lv_obj_set_size(avatar_left_eye, EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_size(avatar_right_eye, EYE_BASE_W, 10);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_size(avatar_mouth, 12, 12);
         lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 2, MOUTH_POS_H);
         if (avatar_kissy) {
@@ -3949,6 +5354,11 @@ void CustomApp_SetEmotion(const char* emotion) {
         if (avatar_sleepy_z) {
             lv_obj_remove_flag(avatar_sleepy_z, LV_OBJ_FLAG_HIDDEN);
         }
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
         // 啟動口水動畫！
         if (avatar_swallow) {
             lv_obj_remove_flag(avatar_swallow, LV_OBJ_FLAG_HIDDEN);
@@ -3973,56 +5383,56 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
     ai_single_click_cb = on_ai_single_click;
     ai_long_press_cb = on_ai_long_press;
 
+    // 1. 短按邏輯
     boot_button.OnClick([]() {
         ESP_LOGI("Button", "短按觸發！當前系統模式: %d", current_system_mode);
         idle_to_clock_counter = 0;  // 只要按鍵，重置閒置計時
 
-        if (current_system_mode == 1) {
-            // 選單模式：切換選項
-            game_menu_selection = (game_menu_selection + 1) % 6;
+        if (current_system_mode == 4) {
+            // App 選單輪捲
+            app_menu_selection = (app_menu_selection + 1) % APP_MAX;
             ui_mode_changed = true;
-        } else if (current_system_mode == 2) {
-            // 遊戲中短按 (2048 悔棋 / Snake 暫停)
+        } else if (current_system_mode == 1) {
+            // Game 選單輪捲
+            game_menu_selection = (game_menu_selection + 1) % GAME_MAX;
+            ui_mode_changed = true;
+        } else if (current_system_mode == 2 || current_system_mode == 5) {
+            // 【修正】無論是在 Game(2) 還是 App(5) 執行中，短按都會觸發動作 (如計時器暫停/發射)
             pending_game_action = 5;
-        } else if (current_system_mode == 3) {
+        } else if (current_system_mode == 3 || current_system_mode == 6) {
             pending_game_action = 6;
         } else if (current_system_mode == 0) {
-            // ==========================================
-            // AI 模式：實體按鍵喚醒邏輯
-            // ==========================================
             DeviceState state = Application::GetInstance().GetDeviceState();
-
             if (state == kDeviceStateIdle) {
-                // 如果目前是安靜待機狀態，觸發 1.5 秒的隨機表情倒數！
-                // (共用我們剛才寫好的 pending_touch_wake 邏輯)
                 pending_touch_wake = 15;
             } else {
-                // 如果 AI 正在說話或正在聆聽，代表你想「打斷」它
-                // 這時候不要延遲，立刻瞬間觸發！
-                if (ai_single_click_cb) {
+                if (ai_single_click_cb)
                     ai_single_click_cb();
-                }
             }
         }
     });
 
     // 2. 長按邏輯
     boot_button.OnLongPress([]() {
-        // ESP_LOGI("Button", "長按觸發！當前系統模式: %d", current_system_mode);
-        idle_to_clock_counter = 0;  // 只要按鍵，重置閒置計時
+        idle_to_clock_counter = 0;
 
-        if (current_system_mode == 1) {
-            // ==========================================
-            // 【核心修正】在選單中長按：一律進入當前選中的遊戲！
-            // ==========================================
-            current_system_mode = 2;  // 進入遊戲模式
+        if (current_system_mode == 4) {
+            // 【修正】在 App 選單長按：進入 App 執行模式 (5)
+            current_system_mode = 5;
+            current_ui_mode = 5;
+            ui_mode_changed = true;
+        } else if (current_system_mode == 1) {
+            // 【修正】在 Game 選單長按：進入 Game 執行模式 (2)
+            current_system_mode = 2;
             current_ui_mode = 2;
             ui_mode_changed = true;
+        } else if (current_system_mode == 5) {
+            // 【修正】在 App 執行中長按：退回 App 選單 (4)
+            current_system_mode = 4;
+            current_ui_mode = 4;
+            ui_mode_changed = true;
         } else if (current_system_mode == 2) {
-            // ==========================================
-            // 在任何遊戲中長按：
-            // 一律退出回到遊戲選單！
-            // ==========================================
+            // 【修正】在 Game 執行中長按：退回 Game 選單 (1)
             current_system_mode = 1;
             current_ui_mode = 1;
             ui_mode_changed = true;
@@ -4034,26 +5444,38 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
         }
     });
 
+    // 3. 雙擊切換模式邏輯：AI(0) -> Apps(4) -> Games(1) -> Time(3) -> AI(0)
     boot_button.OnDoubleClick([]() {
-        idle_to_clock_counter = 0;  // 只要按鍵，重置閒置計時
+        idle_to_clock_counter = 0;
+        auto backlight = Board::GetInstance().GetBacklight();
 
         if (current_system_mode == 0) {
-            // AI 模式 -> 進入遊戲選單
-            current_system_mode = 1;
-            current_ui_mode = 1;
-        } else if (current_system_mode == 1) {
-            // 遊戲選單 -> 進入暗黑時鐘 (並降亮度至 10%)
-            current_system_mode = 3;
-            current_ui_mode = 3;  // 我們用 3 代表獨立時鐘模式
-            auto backlight = Board::GetInstance().GetBacklight();
-            if (backlight)
-                backlight->SetBrightness(10);
-        } else if (current_system_mode == 3 || current_system_mode == 2) {
-            // 時鐘模式 (或遊戲中) 雙擊 -> 強制回血 100% 亮度，回到 AI！
-            auto backlight = Board::GetInstance().GetBacklight();
+            // AI 模式 -> 進入 Apps 選單
+            current_system_mode = 4;
+            current_ui_mode = 4;
+            app_menu_selection = APP_BWA;
             if (backlight)
                 backlight->SetBrightness(100);
-
+        } else if (current_system_mode == 4) {
+            // Apps 選單 -> 進入 Games 選單
+            current_system_mode = 1;
+            current_ui_mode = 1;
+            game_menu_selection = GAME_SPACE;
+            if (backlight)
+                backlight->SetBrightness(100);
+        } else if (current_system_mode == 1) {
+            // Games 選單 -> 進入暗黑時鐘 (3)
+            current_system_mode = 3;
+            current_ui_mode = 3;
+        } else if (current_system_mode == 3) {
+            // 【新增修改】：從時間(3) 雙擊 -> 進入天氣模式(6)
+            current_system_mode = 6;
+            current_ui_mode = 6;
+        } else if (current_system_mode == 6 || current_system_mode == 2 ||
+                   current_system_mode == 5) {
+            // 【新增修改】：從天氣(6) 或其他遊戲App雙擊 -> 回血 100% 亮度，回到 AI (0)
+            if (backlight)
+                backlight->SetBrightness(100);
             current_system_mode = 0;
             current_ui_mode = 0;
         }
