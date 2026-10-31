@@ -735,6 +735,7 @@ enum AppIndex {
 enum GameIndex {
     GAME_SPACE = 0,  // 太空侵略者
     GAME_SLOT,       // 老虎機
+    GAME_TICTACTOE,  // 過三關
     GAME_BREAKOUT,   // 打磚塊
     GAME_2048,       // 2048
     GAME_SNAKE,      // 貪食蛇
@@ -777,6 +778,23 @@ static lv_obj_t* bg_stopwatch = nullptr;
 static lv_obj_t* sw_time_label = nullptr;
 static lv_obj_t* sw_ms_label = nullptr;  // 毫秒標籤
 static lv_obj_t* sw_status_label = nullptr;
+
+// ==========================================
+//        過三關 (Tic-Tac-Toe) 系統變數
+// ==========================================
+enum TicTacToeState { TTT_STATE_START, TTT_STATE_PLAYING, TTT_STATE_PAUSE, TTT_STATE_GAMEOVER };
+
+static lv_obj_t* bg_tictactoe = nullptr;
+static lv_obj_t* ttt_cells[3][3] = {nullptr};
+static lv_obj_t* ttt_labels[3][3] = {nullptr};
+static lv_obj_t* ttt_status_label = nullptr;
+static lv_obj_t* ttt_overlay = nullptr;
+static lv_obj_t* ttt_overlay_label = nullptr;
+
+static int ttt_board[3][3] = {0};  // 0:空, 1:玩家(O), 2:電腦(X)
+static TicTacToeState ttt_game_state = TTT_STATE_START;
+static bool ttt_user_turn = true;   // 紀錄現在是誰的回合
+static int ttt_ai_delay_ticks = 0;  // 讓電腦假裝思考一下的計時器
 
 // 1. 輔助函數：解析單個中文數字 (0-9)
 static int get_cn_digit(const std::string& str, size_t pos) {
@@ -1399,6 +1417,96 @@ static void save_space_best_score(int score) {
     }
 }
 
+// 檢查過三關輸贏：回傳 1(玩家贏), 2(電腦贏), 3(平手), 0(繼續)
+static int ttt_check_winner() {
+    // 檢查橫排與直排
+    for (int i = 0; i < 3; i++) {
+        if (ttt_board[i][0] != 0 && ttt_board[i][0] == ttt_board[i][1] &&
+            ttt_board[i][1] == ttt_board[i][2])
+            return ttt_board[i][0];
+        if (ttt_board[0][i] != 0 && ttt_board[0][i] == ttt_board[1][i] &&
+            ttt_board[1][i] == ttt_board[2][i])
+            return ttt_board[0][i];
+    }
+    // 檢查對角線
+    if (ttt_board[0][0] != 0 && ttt_board[0][0] == ttt_board[1][1] &&
+        ttt_board[1][1] == ttt_board[2][2])
+        return ttt_board[0][0];
+    if (ttt_board[0][2] != 0 && ttt_board[0][2] == ttt_board[1][1] &&
+        ttt_board[1][1] == ttt_board[2][0])
+        return ttt_board[0][2];
+
+    // 檢查是否平手 (盤面全滿)
+    bool full = true;
+    for (int r = 0; r < 3; r++) {
+        for (int c = 0; c < 3; c++) {
+            if (ttt_board[r][c] == 0)
+                full = false;
+        }
+    }
+    return full ? 3 : 0;
+}
+
+// 輔助函數：電腦 AI 尋找是否有必勝或必須防守的格子
+static bool ttt_find_winning_move(int player, int& out_r, int& out_c) {
+    for (int r = 0; r < 3; r++) {
+        for (int c = 0; c < 3; c++) {
+            if (ttt_board[r][c] == 0) {
+                ttt_board[r][c] = player;            // 假裝下一子
+                if (ttt_check_winner() == player) {  // 發現這步會贏！
+                    ttt_board[r][c] = 0;             // 復原
+                    out_r = r;
+                    out_c = c;
+                    return true;
+                }
+                ttt_board[r][c] = 0;  // 復原
+            }
+        }
+    }
+    return false;
+}
+
+// 本地端電腦 AI 下棋邏輯
+static void ttt_ai_make_move() {
+    int r = -1, c = -1;
+
+    // 1. 電腦能贏就直接贏
+    if (ttt_find_winning_move(2, r, c)) {
+    }
+    // 2. 玩家快贏了，立刻防守堵住他
+    else if (ttt_find_winning_move(1, r, c)) {
+    }
+    // 3. 佔領最有利的中間
+    else if (ttt_board[1][1] == 0) {
+        r = 1;
+        c = 1;
+    }
+    // 4. 隨機下在空位
+    else {
+        int empty_count = 0;
+        int empty_cells[9][2];
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                if (ttt_board[i][j] == 0) {
+                    empty_cells[empty_count][0] = i;
+                    empty_cells[empty_count][1] = j;
+                    empty_count++;
+                }
+            }
+        }
+        if (empty_count > 0) {
+            int idx = esp_random() % empty_count;
+            r = empty_cells[idx][0];
+            c = empty_cells[idx][1];
+        }
+    }
+
+    if (r != -1 && c != -1) {
+        ttt_board[r][c] = 2;   // 電腦下 X
+        ttt_user_turn = true;  // 換玩家
+    }
+}
+
 // 隨機生成食物 (確保不會生在蛇的身體裡面)
 static void snake_spawn_food() {
     srand(esp_random());  // 用 ESP32 硬體雜訊洗牌隨機種子
@@ -2015,7 +2123,25 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
                 app.SetDeviceState(kDeviceStateIdle);
             });
         }
-        // 6. 時間模式指令 (橫向)
+        // ========================================================
+        // 6.5 語音進入過三關指令
+        // ========================================================
+        else if (text.find("過三關") != std::string::npos ||
+                 text.find("過參關") != std::string::npos ||
+                 text.find("個參關") != std::string::npos ||
+                 text.find("個三關") != std::string::npos ||
+                 text.find("打井") != std::string::npos) {
+            ESP_LOGI("VoiceCmd", "語音指令：立即跳轉至 過三關");
+            current_system_mode = 2;
+            current_ui_mode = 2;
+            game_menu_selection = GAME_TICTACTOE;
+            ui_mode_changed = true;
+
+            // 安全打斷，不破壞狀態機
+            Application::GetInstance().Schedule(
+                []() { Application::GetInstance().AbortSpeaking(kAbortReasonNone); });
+        }
+        // 6. 時間模式指令
         else if (text.find("時間模式") != std::string::npos ||
                  text.find("时间模式") != std::string::npos ||
                  text.find("時鐘模式") != std::string::npos ||
@@ -2029,7 +2155,7 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
                 backlight->SetBrightness(100);
             ui_mode_changed = true;
         }
-        // 7. 天氣模式指令 (橫向)
+        // 7. 天氣模式指令
         else if (text.find("天氣模式") != std::string::npos ||
                  text.find("天气模式") != std::string::npos ||
                  text.find("睇天氣") != std::string::npos) {
@@ -2127,6 +2253,113 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
                 app.StopListening();
                 app.SetDeviceState(kDeviceStateIdle);
             });
+        }
+        // ========================================================
+        // 過三關遊戲中：攔截座標語音 (無縫下棋)
+        // ========================================================
+        if (current_ui_mode == 2 && game_menu_selection == GAME_TICTACTOE && ttt_user_turn) {
+            int move_r = -1, move_c = -1;
+
+            // 判斷玩家說的方位 (增加容錯關鍵字)
+            if (text.find("左上") != std::string::npos || text.find("咗上") != std::string::npos) {
+                move_r = 0;
+                move_c = 0;
+            } else if (text.find("中上") != std::string::npos ||
+                       text.find("鍾上") != std::string::npos ||
+                       text.find("綜上") != std::string::npos ||
+                       text.find("中償") != std::string::npos ||
+                       text.find("鍾償") != std::string::npos ||
+                       text.find("綜償") != std::string::npos ||
+                       text.find("上中") != std::string::npos ||
+                       text.find("正上") != std::string::npos ||
+                       text.find("正償") != std::string::npos) {
+                move_r = 0;
+                move_c = 1;
+            } else if (text.find("右上") != std::string::npos ||
+                       text.find("由上") != std::string::npos ||
+                       text.find("又上") != std::string::npos ||
+                       text.find("右償") != std::string::npos ||
+                       text.find("由償") != std::string::npos ||
+                       text.find("又償") != std::string::npos) {
+                move_r = 0;
+                move_c = 2;
+            } else if (text.find("左中") != std::string::npos ||
+                       text.find("中左") != std::string::npos ||
+                       text.find("正左") != std::string::npos ||
+                       text.find("咗中") != std::string::npos ||
+                       text.find("左鍾") != std::string::npos ||
+                       text.find("咗鍾") != std::string::npos ||
+                       text.find("鍾左") != std::string::npos ||
+                       text.find("鍾咗") != std::string::npos) {
+                move_r = 1;
+                move_c = 0;
+            } else if (text.find("中間") != std::string::npos ||
+                       text.find("鍾間") != std::string::npos ||
+                       text.find("綜間") != std::string::npos ||
+                       text.find("正中") != std::string::npos ||
+                       text.find("正鍾") != std::string::npos ||
+                       text.find("正綜") != std::string::npos) {
+                move_r = 1;
+                move_c = 1;
+            } else if (text.find("右中") != std::string::npos ||
+                       text.find("右鐘") != std::string::npos ||
+                       text.find("右綜") != std::string::npos ||
+                       text.find("又中") != std::string::npos ||
+                       text.find("又綜") != std::string::npos ||
+                       text.find("又鍾") != std::string::npos ||
+                       text.find("由中") != std::string::npos ||
+                       text.find("由綜") != std::string::npos ||
+                       text.find("由鍾") != std::string::npos ||
+                       text.find("中右") != std::string::npos ||
+                       text.find("鐘右") != std::string::npos ||
+                       text.find("綜右") != std::string::npos) {
+                move_r = 1;
+                move_c = 2;
+            } else if (text.find("左下") != std::string::npos ||
+                       text.find("咗下") != std::string::npos) {
+                move_r = 2;
+                move_c = 0;
+            } else if (text.find("中下") != std::string::npos ||
+                       text.find("綜下") != std::string::npos ||
+                       text.find("鍾下") != std::string::npos ||
+                       text.find("中吓") != std::string::npos ||
+                       text.find("綜吓") != std::string::npos ||
+                       text.find("鍾吓") != std::string::npos) {
+                move_r = 2;
+                move_c = 1;
+            } else if (text.find("右下") != std::string::npos ||
+                       text.find("由下") != std::string::npos ||
+                       text.find("又下") != std::string::npos ||
+                       text.find("右吓") != std::string::npos ||
+                       text.find("由吓") != std::string::npos ||
+                       text.find("又吓") != std::string::npos) {
+                move_r = 2;
+                move_c = 2;
+            }
+
+            // 如果有辨識到方位
+            if (move_r != -1 && move_c != -1) {
+                // 【超級優化】：如果遊戲還在 Start 或 Game Over 畫面，
+                // 只要聽到方位，就「自動開始新遊戲」，省去手動按鍵的麻煩！
+                if (ttt_game_state == TTT_STATE_START || ttt_game_state == TTT_STATE_GAMEOVER) {
+                    ttt_game_state = TTT_STATE_PLAYING;
+                    memset(ttt_board, 0, sizeof(ttt_board));
+                    if (ttt_overlay)
+                        lv_obj_add_flag(ttt_overlay, LV_OBJ_FLAG_HIDDEN);
+                }
+
+                // 如果該格子是空的，才允許落子
+                if (ttt_board[move_r][move_c] == 0) {
+                    ESP_LOGI("TicTacToe", "玩家語音下棋：[%d][%d]", move_r, move_c);
+                    ttt_board[move_r][move_c] = 1;  // 玩家下 O
+                    ttt_user_turn = false;          // 換電腦思考
+                    ttt_ai_delay_ticks = 0;
+
+                    // 【核心修復】：只使用 AbortSpeaking，讓系統安全且自然地結束對話回到 Idle
+                    Application::GetInstance().Schedule(
+                        []() { Application::GetInstance().AbortSpeaking(kAbortReasonNone); });
+                }
+            }
         }
     }
 }
@@ -2246,6 +2479,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             lv_obj_add_flag(bg_2048, LV_OBJ_FLAG_HIDDEN);
         if (bg_snake)
             lv_obj_add_flag(bg_snake, LV_OBJ_FLAG_HIDDEN);
+        if (bg_tictactoe)
+            lv_obj_add_flag(bg_tictactoe, LV_OBJ_FLAG_HIDDEN);
         if (bg_bwa)
             lv_obj_add_flag(bg_bwa, LV_OBJ_FLAG_HIDDEN);
         if (bg_marksix)
@@ -2305,8 +2540,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             } else {
                 lv_obj_set_style_bg_color(game_menu_bg, lv_color_hex(0x57007b), 0);
                 lv_label_set_text(menu_title_label, "GAME MODE");
-                const char* game_texts[] = {"Space\nInvaders", "Lucky 7", "Breakout", "2048",
-                                            "Snake"};
+                const char* game_texts[] = {"Space\nInvaders", "Lucky 7", "Tic Tac\nToe",
+                                            "Breakout",        "2048",    "Snake"};
                 lv_label_set_text(game_menu_label, game_texts[game_menu_selection]);
             }
 
@@ -2912,6 +3147,60 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 snake_game_state = SNAKE_STATE_START;
                 lv_label_set_text_fmt(snake_overlay_label, "Best\nScore:\n%d", snake_best_score);
                 lv_obj_remove_flag(snake_overlay, LV_OBJ_FLAG_HIDDEN);
+            } else if (game_menu_selection == GAME_TICTACTOE) {
+                // ==================== 過三關 啟動邏輯 ====================
+                if (!bg_tictactoe) {
+                    bg_tictactoe = lv_obj_create(lv_scr_act());
+                    lv_obj_set_size(bg_tictactoe, LCD_W, LCD_H);
+                    lv_obj_set_style_bg_color(bg_tictactoe, lv_color_black(), 0);
+                    lv_obj_set_style_pad_all(bg_tictactoe, 0, 0);
+                    lv_obj_set_style_border_width(bg_tictactoe, 0, 0);
+                    lv_obj_set_style_radius(bg_tictactoe, 0, 0);
+
+                    // 1. 頂部狀態列
+                    /*
+                    ttt_status_label = lv_label_create(bg_tictactoe);
+                    lv_obj_set_style_text_color(ttt_status_label, lv_color_white(), 0);
+                    lv_obj_align(ttt_status_label, LV_ALIGN_TOP_MID, 0, 16);
+                    */
+
+                    // 2. 建立 3x3 棋盤
+                    for (int r = 0; r < 3; r++) {
+                        for (int c = 0; c < 3; c++) {
+                            ttt_cells[r][c] = lv_obj_create(bg_tictactoe);
+                            lv_obj_set_size(ttt_cells[r][c], 36, 36);  // 格子大小
+                            lv_obj_align(ttt_cells[r][c], LV_ALIGN_TOP_LEFT, 10 + c * 38,
+                                         10 + r * 38);  // 置中計算
+                            lv_obj_set_style_bg_color(ttt_cells[r][c], lv_color_hex(0x222222), 0);
+                            // lv_obj_set_style_border_color(ttt_cells[r][c],
+                            // lv_color_hex(0x555555), 0);
+                            // lv_obj_set_style_border_width(ttt_cells[r][c], 2, 0);
+                            lv_obj_clear_flag(ttt_cells[r][c], LV_OBJ_FLAG_SCROLLABLE);
+
+                            ttt_labels[r][c] = lv_label_create(ttt_cells[r][c]);
+                            lv_obj_set_style_text_font(ttt_labels[r][c], &lv_font_montserrat_28, 0);
+                            lv_obj_align(ttt_labels[r][c], LV_ALIGN_CENTER, 0, 0);
+                        }
+                    }
+
+                    // 3. 遮罩層 (START & GAME OVER)
+                    ttt_overlay = lv_obj_create(bg_tictactoe);
+                    lv_obj_set_size(ttt_overlay, LCD_W, LCD_H);
+                    lv_obj_set_style_bg_color(ttt_overlay, lv_color_black(), 0);
+                    lv_obj_set_style_bg_opa(ttt_overlay, LV_OPA_80, 0);
+                    lv_obj_align(ttt_overlay, LV_ALIGN_CENTER, 0, 0);
+
+                    ttt_overlay_label = lv_label_create(ttt_overlay);
+                    lv_obj_set_style_text_color(ttt_overlay_label, lv_color_make(255, 200, 0), 0);
+                    lv_obj_set_style_text_font(ttt_overlay_label, &lv_font_montserrat_28, 0);
+                    lv_obj_set_style_text_align(ttt_overlay_label, LV_TEXT_ALIGN_CENTER, 0);
+                    lv_obj_align(ttt_overlay_label, LV_ALIGN_CENTER, 0, 0);
+                }
+
+                lv_obj_remove_flag(bg_tictactoe, LV_OBJ_FLAG_HIDDEN);
+                ttt_game_state = TTT_STATE_START;
+                lv_label_set_text(ttt_overlay_label, "Press to\nStart");
+                lv_obj_remove_flag(ttt_overlay, LV_OBJ_FLAG_HIDDEN);
             }
 
             if (!imu_initialized)
@@ -3000,6 +3289,61 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight)
                 backlight->SetBrightness(100);
+        }
+    }
+
+    // ==============================================
+    // 過三關 (Tic-Tac-Toe) 遊戲核心引擎與 AI
+    // ==============================================
+    if (current_ui_mode == 2 && game_menu_selection == GAME_TICTACTOE) {
+        if (ttt_game_state == TTT_STATE_PLAYING) {
+            // 檢查輸贏
+            int winner = ttt_check_winner();
+            if (winner != 0) {
+                ttt_game_state = TTT_STATE_GAMEOVER;
+                lv_obj_remove_flag(ttt_overlay, LV_OBJ_FLAG_HIDDEN);
+                if (winner == 1)
+                    lv_label_set_text(ttt_overlay_label, "You WIN!");
+                else if (winner == 2)
+                    lv_label_set_text(ttt_overlay_label, "AI WINS!");
+                else
+                    lv_label_set_text(ttt_overlay_label, "DRAW!");
+            } else if (!ttt_user_turn) {
+                // 電腦回合：假裝思考 0.8 秒 (避免瞬間下子太快沒實感)
+                ttt_ai_delay_ticks++;
+                if (ttt_ai_delay_ticks > 8) {
+                    ttt_ai_make_move();
+                    ttt_ai_delay_ticks = 0;
+                }
+            }
+
+            // 更新提示字
+            if (ttt_user_turn) {
+                lv_label_set_text(ttt_status_label, "Your Turn: O");
+                lv_obj_set_style_text_color(ttt_status_label, lv_color_hex(0x00FF66), 0);
+            } else {
+                lv_label_set_text(ttt_status_label, "thinking...");
+                lv_obj_set_style_text_color(ttt_status_label, lv_color_hex(0xFF3333), 0);
+            }
+        }
+
+        // 刷新 3x3 棋盤 UI
+        if (bg_tictactoe) {
+            for (int r = 0; r < 3; r++) {
+                for (int c = 0; c < 3; c++) {
+                    if (ttt_board[r][c] == 1) {
+                        lv_label_set_text(ttt_labels[r][c], "O");
+                        lv_obj_set_style_text_color(ttt_labels[r][c], lv_color_hex(0x00FF66),
+                                                    0);  // 玩家綠色
+                    } else if (ttt_board[r][c] == 2) {
+                        lv_label_set_text(ttt_labels[r][c], "X");
+                        lv_obj_set_style_text_color(ttt_labels[r][c], lv_color_hex(0xFF3333),
+                                                    0);  // 電腦紅色
+                    } else {
+                        lv_label_set_text(ttt_labels[r][c], "");
+                    }
+                }
+            }
         }
     }
 
@@ -3484,6 +3828,27 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                             lv_obj_set_style_text_color(slot_status_label, lv_color_white(),
                                                         0);  // 恢復白字
                         }
+                    }
+                } else if (game_menu_selection == GAME_TICTACTOE) {
+                    if (ttt_game_state == TTT_STATE_START || ttt_game_state == TTT_STATE_GAMEOVER) {
+                        ttt_game_state = TTT_STATE_PLAYING;
+                        if (ttt_overlay)
+                            lv_obj_add_flag(ttt_overlay, LV_OBJ_FLAG_HIDDEN);
+
+                        // 清空盤面
+                        memset(ttt_board, 0, sizeof(ttt_board));
+
+                        // 隨機決定誰先手 (50% 機率)
+                        ttt_user_turn = (esp_random() % 2 == 0);
+                        ttt_ai_delay_ticks = 0;
+                    } else if (ttt_game_state == TTT_STATE_PLAYING) {
+                        ttt_game_state = TTT_STATE_PAUSE;
+                        lv_label_set_text(ttt_overlay_label, "Paused");
+                        lv_obj_remove_flag(ttt_overlay, LV_OBJ_FLAG_HIDDEN);
+                    } else if (ttt_game_state == TTT_STATE_PAUSE) {
+                        ttt_game_state = TTT_STATE_PLAYING;
+                        if (ttt_overlay)
+                            lv_obj_add_flag(ttt_overlay, LV_OBJ_FLAG_HIDDEN);
                     }
                 } else if (game_menu_selection == GAME_BREAKOUT) {
                     if (bk_game_state == BK_STATE_START || bk_game_state == BK_STATE_GAMEOVER) {
