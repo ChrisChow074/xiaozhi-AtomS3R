@@ -56,7 +56,7 @@ const int CLOCK_DIM_TIMEOUT_SEC = 5;  // 亮起後等待幾秒自動變暗 (可�
 #define MOUTH_BASE_H 8
 #define MOUTH_POS_H 12
 
-#define BRIGHTNESS_DIM 10
+#define BRIGHTNESS_DIM 5
 
 // ==========================================
 //           螢幕解析度常數 (M5StickS3)
@@ -787,9 +787,13 @@ enum TicTacToeState { TTT_STATE_START, TTT_STATE_PLAYING, TTT_STATE_PAUSE, TTT_S
 static lv_obj_t* bg_tictactoe = nullptr;
 static lv_obj_t* ttt_cells[3][3] = {nullptr};
 static lv_obj_t* ttt_labels[3][3] = {nullptr};
-static lv_obj_t* ttt_status_label = nullptr;
 static lv_obj_t* ttt_overlay = nullptr;
 static lv_obj_t* ttt_overlay_label = nullptr;
+static lv_obj_t* ttt_toast_bg = nullptr;
+static lv_obj_t* ttt_toast_label = nullptr;
+static int ttt_toast_timer = 0;  // Toast 顯示倒數
+static int pending_ttt_r = -1;   // 安全跨執行緒下棋 R
+static int pending_ttt_c = -1;   // 安全跨執行緒下棋 C
 
 static int ttt_board[3][3] = {0};  // 0:空, 1:玩家(O), 2:電腦(X)
 static TicTacToeState ttt_game_state = TTT_STATE_START;
@@ -2257,7 +2261,9 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
         // ========================================================
         // 過三關遊戲中：攔截座標語音 (無縫下棋)
         // ========================================================
-        if (current_ui_mode == 2 && game_menu_selection == GAME_TICTACTOE && ttt_user_turn) {
+        if (current_ui_mode == 2 && game_menu_selection == GAME_TICTACTOE &&
+            (ttt_user_turn || ttt_game_state == TTT_STATE_START ||
+             ttt_game_state == TTT_STATE_GAMEOVER)) {
             int move_r = -1, move_c = -1;
 
             // 判斷玩家說的方位 (增加容錯關鍵字)
@@ -2339,26 +2345,14 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
 
             // 如果有辨識到方位
             if (move_r != -1 && move_c != -1) {
-                // 【超級優化】：如果遊戲還在 Start 或 Game Over 畫面，
-                // 只要聽到方位，就「自動開始新遊戲」，省去手動按鍵的麻煩！
-                if (ttt_game_state == TTT_STATE_START || ttt_game_state == TTT_STATE_GAMEOVER) {
-                    ttt_game_state = TTT_STATE_PLAYING;
-                    memset(ttt_board, 0, sizeof(ttt_board));
-                    if (ttt_overlay)
-                        lv_obj_add_flag(ttt_overlay, LV_OBJ_FLAG_HIDDEN);
-                }
+                ESP_LOGI("TicTacToe", "收到語音方位: [%d][%d]", move_r, move_c);
 
-                // 如果該格子是空的，才允許落子
-                if (ttt_board[move_r][move_c] == 0) {
-                    ESP_LOGI("TicTacToe", "玩家語音下棋：[%d][%d]", move_r, move_c);
-                    ttt_board[move_r][move_c] = 1;  // 玩家下 O
-                    ttt_user_turn = false;          // 換電腦思考
-                    ttt_ai_delay_ticks = 0;
+                // 【核心修復】：絕對不要在這裡呼叫 LVGL，只把座標交給 UI 執行緒去處理
+                pending_ttt_r = move_r;
+                pending_ttt_c = move_c;
 
-                    // 【核心修復】：只使用 AbortSpeaking，讓系統安全且自然地結束對話回到 Idle
-                    Application::GetInstance().Schedule(
-                        []() { Application::GetInstance().AbortSpeaking(kAbortReasonNone); });
-                }
+                Application::GetInstance().Schedule(
+                    []() { Application::GetInstance().AbortSpeaking(kAbortReasonNone); });
             }
         }
     }
@@ -3157,24 +3151,17 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                     lv_obj_set_style_border_width(bg_tictactoe, 0, 0);
                     lv_obj_set_style_radius(bg_tictactoe, 0, 0);
 
-                    // 1. 頂部狀態列
-                    /*
-                    ttt_status_label = lv_label_create(bg_tictactoe);
-                    lv_obj_set_style_text_color(ttt_status_label, lv_color_white(), 0);
-                    lv_obj_align(ttt_status_label, LV_ALIGN_TOP_MID, 0, 16);
-                    */
-
                     // 2. 建立 3x3 棋盤
                     for (int r = 0; r < 3; r++) {
                         for (int c = 0; c < 3; c++) {
                             ttt_cells[r][c] = lv_obj_create(bg_tictactoe);
-                            lv_obj_set_size(ttt_cells[r][c], 36, 36);  // 格子大小
-                            lv_obj_align(ttt_cells[r][c], LV_ALIGN_TOP_LEFT, 10 + c * 38,
-                                         10 + r * 38);  // 置中計算
+                            lv_obj_set_size(ttt_cells[r][c], 34, 34);  // 格子大小
+                            lv_obj_align(ttt_cells[r][c], LV_ALIGN_TOP_LEFT, 8 + c * 38,
+                                         8 + r * 38);  // 置中計算
                             lv_obj_set_style_bg_color(ttt_cells[r][c], lv_color_hex(0x222222), 0);
                             // lv_obj_set_style_border_color(ttt_cells[r][c],
                             // lv_color_hex(0x555555), 0);
-                            // lv_obj_set_style_border_width(ttt_cells[r][c], 2, 0);
+                            lv_obj_set_style_border_width(ttt_cells[r][c], 0, 0);
                             lv_obj_clear_flag(ttt_cells[r][c], LV_OBJ_FLAG_SCROLLABLE);
 
                             ttt_labels[r][c] = lv_label_create(ttt_cells[r][c]);
@@ -3183,7 +3170,22 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                         }
                     }
 
-                    // 3. 遮罩層 (START & GAME OVER)
+                    // 2. 建立 Toast 彈出提示框 (覆蓋在畫面上方)
+                    ttt_toast_bg = lv_obj_create(bg_tictactoe);
+                    lv_obj_set_size(ttt_toast_bg, 110, 50);
+                    lv_obj_set_style_bg_color(ttt_toast_bg, lv_color_hex(0x000000), 0);
+                    lv_obj_set_style_bg_opa(ttt_toast_bg, LV_OPA_90, 0);
+                    lv_obj_set_style_border_color(ttt_toast_bg, lv_color_white(), 0);
+                    lv_obj_set_style_border_width(ttt_toast_bg, 2, 0);
+                    lv_obj_align(ttt_toast_bg, LV_ALIGN_CENTER, 0, 0);
+                    lv_obj_add_flag(ttt_toast_bg, LV_OBJ_FLAG_HIDDEN);  // 預設隱藏
+
+                    ttt_toast_label = lv_label_create(ttt_toast_bg);
+                    lv_obj_set_style_text_font(ttt_toast_label, &lv_font_montserrat_16, 0);
+                    lv_obj_set_style_text_align(ttt_toast_label, LV_TEXT_ALIGN_CENTER, 0);
+                    lv_obj_align(ttt_toast_label, LV_ALIGN_CENTER, 0, 0);
+
+                    // 3. 遊戲開始/結束 遮罩層
                     ttt_overlay = lv_obj_create(bg_tictactoe);
                     lv_obj_set_size(ttt_overlay, LCD_W, LCD_H);
                     lv_obj_set_style_bg_color(ttt_overlay, lv_color_black(), 0);
@@ -3192,7 +3194,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
                     ttt_overlay_label = lv_label_create(ttt_overlay);
                     lv_obj_set_style_text_color(ttt_overlay_label, lv_color_make(255, 200, 0), 0);
-                    lv_obj_set_style_text_font(ttt_overlay_label, &lv_font_montserrat_28, 0);
+                    lv_obj_set_style_text_font(ttt_overlay_label, &lv_font_montserrat_24, 0);
                     lv_obj_set_style_text_align(ttt_overlay_label, LV_TEXT_ALIGN_CENTER, 0);
                     lv_obj_align(ttt_overlay_label, LV_ALIGN_CENTER, 0, 0);
                 }
@@ -3296,6 +3298,36 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     // 過三關 (Tic-Tac-Toe) 遊戲核心引擎與 AI
     // ==============================================
     if (current_ui_mode == 2 && game_menu_selection == GAME_TICTACTOE) {
+        // 1. 安全接收背景語音傳來的玩家下棋動作
+        if (pending_ttt_r != -1 && pending_ttt_c != -1) {
+            // 如果還在 Start 畫面，自動開始新遊戲
+            if (ttt_game_state == TTT_STATE_START || ttt_game_state == TTT_STATE_GAMEOVER) {
+                ttt_game_state = TTT_STATE_PLAYING;
+                memset(ttt_board, 0, sizeof(ttt_board));
+                ttt_user_turn = true;  // 👈👈👈 【核心修復】：強制把回合重置為玩家先手！
+                ttt_ai_delay_ticks = 0;
+                if (ttt_overlay)
+                    lv_obj_add_flag(ttt_overlay, LV_OBJ_FLAG_HIDDEN);
+            }
+
+            // 落子
+            if (ttt_board[pending_ttt_r][pending_ttt_c] == 0) {
+                ttt_board[pending_ttt_r][pending_ttt_c] = 1;
+                ttt_user_turn = false;
+                ttt_ai_delay_ticks = 0;
+
+                // 彈出 AI 思考中的 Toast
+                if (ttt_toast_bg) {
+                    lv_label_set_text(ttt_toast_label, "thinking...");
+                    lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0xFF3333), 0);
+                    lv_obj_remove_flag(ttt_toast_bg, LV_OBJ_FLAG_HIDDEN);
+                    ttt_toast_timer = 15;  // 顯示 1.5 秒
+                }
+            }
+            pending_ttt_r = -1;  // 處理完畢歸零
+            pending_ttt_c = -1;
+        }
+
         if (ttt_game_state == TTT_STATE_PLAYING) {
             // 檢查輸贏
             int winner = ttt_check_winner();
@@ -3309,21 +3341,28 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 else
                     lv_label_set_text(ttt_overlay_label, "DRAW!");
             } else if (!ttt_user_turn) {
-                // 電腦回合：假裝思考 0.8 秒 (避免瞬間下子太快沒實感)
+                // 電腦回合：思考 0.8 秒
                 ttt_ai_delay_ticks++;
                 if (ttt_ai_delay_ticks > 8) {
                     ttt_ai_make_move();
                     ttt_ai_delay_ticks = 0;
+
+                    // 電腦下完，彈出換玩家的 Toast
+                    if (ttt_toast_bg) {
+                        lv_label_set_text(ttt_toast_label, "Your Turn");
+                        lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0x00FF66), 0);
+                        lv_obj_remove_flag(ttt_toast_bg, LV_OBJ_FLAG_HIDDEN);
+                        ttt_toast_timer = 15;
+                    }
                 }
             }
+        }
 
-            // 更新提示字
-            if (ttt_user_turn) {
-                lv_label_set_text(ttt_status_label, "Your Turn: O");
-                lv_obj_set_style_text_color(ttt_status_label, lv_color_hex(0x00FF66), 0);
-            } else {
-                lv_label_set_text(ttt_status_label, "thinking...");
-                lv_obj_set_style_text_color(ttt_status_label, lv_color_hex(0xFF3333), 0);
+        // 處理 Toast 自動消失
+        if (ttt_toast_timer > 0) {
+            ttt_toast_timer--;
+            if (ttt_toast_timer == 0 && ttt_toast_bg) {
+                lv_obj_add_flag(ttt_toast_bg, LV_OBJ_FLAG_HIDDEN);
             }
         }
 
@@ -3333,12 +3372,10 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 for (int c = 0; c < 3; c++) {
                     if (ttt_board[r][c] == 1) {
                         lv_label_set_text(ttt_labels[r][c], "O");
-                        lv_obj_set_style_text_color(ttt_labels[r][c], lv_color_hex(0x00FF66),
-                                                    0);  // 玩家綠色
+                        lv_obj_set_style_text_color(ttt_labels[r][c], lv_color_hex(0x00FF66), 0);
                     } else if (ttt_board[r][c] == 2) {
                         lv_label_set_text(ttt_labels[r][c], "X");
-                        lv_obj_set_style_text_color(ttt_labels[r][c], lv_color_hex(0xFF3333),
-                                                    0);  // 電腦紅色
+                        lv_obj_set_style_text_color(ttt_labels[r][c], lv_color_hex(0xFF3333), 0);
                     } else {
                         lv_label_set_text(ttt_labels[r][c], "");
                     }
@@ -5761,8 +5798,15 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
             game_menu_selection = (game_menu_selection + 1) % GAME_MAX;
             ui_mode_changed = true;
         } else if (current_system_mode == 2 || current_system_mode == 5) {
-            // 【修正】無論是在 Game(2) 還是 App(5) 執行中，短按都會觸發動作 (如計時器暫停/發射)
-            pending_game_action = 5;
+            if (current_system_mode == 2 && game_menu_selection == GAME_TICTACTOE) {
+                // 在過三關中，主按鍵唯一的功能就是「喚醒麥克風聽方位」！
+                ESP_LOGI("TicTacToe", "按下主按鍵，啟動麥克風聽取方位...");
+                if (ai_single_click_cb)
+                    ai_single_click_cb();
+            } else {
+                // 其他遊戲與 App (如打磚塊、計時器) 保留原本的暫停/開始功能
+                pending_game_action = 5;
+            }
         } else if (current_system_mode == 3 || current_system_mode == 6) {
             pending_game_action = 6;
         } else if (current_system_mode == 0) {
