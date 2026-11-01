@@ -3304,13 +3304,21 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             if (ttt_game_state == TTT_STATE_START || ttt_game_state == TTT_STATE_GAMEOVER) {
                 ttt_game_state = TTT_STATE_PLAYING;
                 memset(ttt_board, 0, sizeof(ttt_board));
-                ttt_user_turn = true;  // 👈👈👈 【核心修復】：強制把回合重置為玩家先手！
+                ttt_user_turn = true;  // 語音下棋，強制玩家先手
                 ttt_ai_delay_ticks = 0;
                 if (ttt_overlay)
                     lv_obj_add_flag(ttt_overlay, LV_OBJ_FLAG_HIDDEN);
+
+                // 顯示遊戲開始 Toast
+                if (ttt_toast_bg) {
+                    lv_label_set_text(ttt_toast_label, "Your Turn");
+                    lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0x00FF66), 0);
+                    lv_obj_remove_flag(ttt_toast_bg, LV_OBJ_FLAG_HIDDEN);
+                    ttt_toast_timer = 15;
+                }
             }
 
-            // 落子
+            // 落子判斷
             if (ttt_board[pending_ttt_r][pending_ttt_c] == 0) {
                 ttt_board[pending_ttt_r][pending_ttt_c] = 1;
                 ttt_user_turn = false;
@@ -3322,6 +3330,14 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                     lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0xFF3333), 0);
                     lv_obj_remove_flag(ttt_toast_bg, LV_OBJ_FLAG_HIDDEN);
                     ttt_toast_timer = 15;  // 顯示 1.5 秒
+                }
+            } else {
+                // 👇【新增】位置已經被佔用的提示
+                if (ttt_toast_bg) {
+                    lv_label_set_text(ttt_toast_label, "Taken!");  // 已佔用
+                    lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0xFF3333), 0);
+                    lv_obj_remove_flag(ttt_toast_bg, LV_OBJ_FLAG_HIDDEN);
+                    ttt_toast_timer = 15;
                 }
             }
             pending_ttt_r = -1;  // 處理完畢歸零
@@ -3878,6 +3894,21 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                         // 隨機決定誰先手 (50% 機率)
                         ttt_user_turn = (esp_random() % 2 == 0);
                         ttt_ai_delay_ticks = 0;
+
+                        // 👇【新增】按鈕開始遊戲時的狀態 Toast
+                        if (ttt_toast_bg) {
+                            lv_obj_remove_flag(ttt_toast_bg, LV_OBJ_FLAG_HIDDEN);
+                            ttt_toast_timer = 15;
+                            if (ttt_user_turn) {
+                                lv_label_set_text(ttt_toast_label, "Your Turn");
+                                lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0x00FF66),
+                                                            0);
+                            } else {
+                                lv_label_set_text(ttt_toast_label, "thinking...");
+                                lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0xFF3333),
+                                                            0);
+                            }
+                        }
                     } else if (ttt_game_state == TTT_STATE_PLAYING) {
                         ttt_game_state = TTT_STATE_PAUSE;
                         lv_label_set_text(ttt_overlay_label, "Paused");
@@ -5852,7 +5883,7 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
         }
     });
 
-    // 3. 雙擊切換模式邏輯：AI(0) -> Apps(4) -> Games(1) -> Time(3) -> AI(0)
+    // 3. 雙擊切換模式邏輯：AI(0) -> Apps(4) -> Games(1) -> Time(3) -> Weather(6)-> AI(0)
     boot_button.OnDoubleClick([]() {
         idle_to_clock_counter = 0;
         auto backlight = Board::GetInstance().GetBacklight();
@@ -5876,7 +5907,7 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
             current_system_mode = 3;
             current_ui_mode = 3;
         } else if (current_system_mode == 3) {
-            // 【新增修改】：從時間(3) 雙擊 -> 進入天氣模式(6)
+            // 時間(3) 雙擊 -> 進入天氣模式(6)
             current_system_mode = 6;
             current_ui_mode = 6;
         } else if (current_system_mode == 6 || current_system_mode == 2 ||
@@ -5886,6 +5917,12 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
                 backlight->SetBrightness(100);
             current_system_mode = 0;
             current_ui_mode = 0;
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
         }
         ui_mode_changed = true;
     });
