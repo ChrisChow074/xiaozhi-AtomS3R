@@ -6403,6 +6403,12 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
                 backlight->SetBrightness(100);
             current_system_mode = 0;
             current_ui_mode = 0;
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
         }
         ui_mode_changed = true;
     });
