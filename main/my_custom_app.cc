@@ -49,6 +49,7 @@ static lv_obj_t* bg_weather_mode = nullptr;
 static lv_obj_t* weather_icon_container = nullptr;
 static lv_obj_t* weather_current_label = nullptr;
 static lv_obj_t* weather_hilo_label = nullptr;
+static lv_obj_t* weather_icon_label = nullptr;
 
 static char last_drawn_weather[32] = "";  // 紀錄上次畫的天氣，避免每秒重複繪製導致閃爍
 
@@ -307,7 +308,13 @@ static void imu_init_task(void* pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
-    // 2. 拿到 I2C Bus 後，開始執行初始化 (這裡面的 Delay 就不會卡到畫面了)
+    // 【修復 2】：拿到 I2C 後先強制休眠 3 秒！
+    // 確保 Xiaozhi 主程式能順利完成 ES8311 音效晶片與電源管理晶片的初始化，
+    // 避免我們上傳巨大 IMU 韌體時霸佔 I2C 通道，導致系統觸發 abort() 不斷重啟。
+    ESP_LOGI("IMU", "已取得 I2C 權限，等待系統核心啟動完成...");
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    // 2. 開始執行初始化 (這裡面的 Delay 就不會卡到畫面了)
     ESP_LOGI("IMU", "背景任務開始初始化 BMI270...");
     imu_init();
 
@@ -482,86 +489,88 @@ static void update_weather_icon_ui(const char* desc) {
     localtime_r(&now, &timeinfo);
     bool is_daytime = (timeinfo.tm_hour >= 7 && timeinfo.tm_hour < 19);
 
-    // 建立一個文字標籤來顯示圖標
-    lv_obj_t* icon_label = lv_label_create(weather_icon_container);
-    // 設定使用你的客製化圖標字型
-    lv_obj_set_style_text_font(icon_label, &weather_110, 0);
-    lv_obj_align(icon_label, LV_ALIGN_CENTER, 0, 0);
+    // 【修改】：避免反覆 lv_obj_clean 產生記憶體碎片，改為重複利用 label
+    if (!weather_icon_label) {
+        weather_icon_label = lv_label_create(weather_icon_container);
+        lv_obj_set_style_text_font(weather_icon_label, &weather_110, 0);
+        lv_obj_align(weather_icon_label, LV_ALIGN_CENTER, 0, 0);
+    }
 
     // 根據後端傳來的分類，對應到圖片中的英文字母 (採用線條風格 A-Z)
     if (strstr(desc, "PartlyCloudy")) {
         if (is_daytime) {
-            lv_label_set_text(icon_label, "A");  // 太陽 + 雲
-            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xFF9C00), 0);
+            lv_label_set_text(weather_icon_label, "A");  // 太陽 + 雲
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0xFF9C00), 0);
         } else {
-            lv_label_set_text(icon_label, "a");                                  // 月亮 + 雲
-            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xCCCCCC), 0);  // 月光與雲的灰白色
+            lv_label_set_text(weather_icon_label, "a");  // 月亮 + 雲
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0xCCCCCC),
+                                        0);  // 月光與雲的灰白色
         }
     } else if (strstr(desc, "Sunny") || strstr(desc, "Clear")) {
         if (is_daytime) {
-            lv_label_set_text(icon_label, "1");  // 太陽
-            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xFF9C00), 0);
+            lv_label_set_text(weather_icon_label, "1");  // 太陽
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0xFF9C00), 0);
         } else {
-            lv_label_set_text(icon_label, "6");  // 月亮
-            lv_obj_set_style_text_color(icon_label, lv_color_white(), 0);
+            lv_label_set_text(weather_icon_label, "6");  // 月亮
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_white(), 0);
         }
     } else if (strstr(desc, "Overcast")) {
-        lv_label_set_text(icon_label, "3");  // 兩朵雲 (密雲)
-        lv_obj_set_style_text_color(icon_label, lv_color_hex(0xAAAAAA), 0);
+        lv_label_set_text(weather_icon_label, "3");  // 兩朵雲 (密雲)
+        lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0xAAAAAA), 0);
     } else if (strstr(desc, "Cloudy") || strstr(desc, "Clouds")) {
-        lv_label_set_text(icon_label, "3");  // 單朵雲 (多雲)
-        lv_obj_set_style_text_color(icon_label, lv_color_hex(0xAAAAAA), 0);
+        lv_label_set_text(weather_icon_label, "3");  // 單朵雲 (多雲)
+        lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0xAAAAAA), 0);
     } else if (strstr(desc, "HeavyRain")) {
         if (is_daytime) {
-            lv_label_set_text(icon_label, "O");                                  // 雲 + 大雨滴
-            lv_obj_set_style_text_color(icon_label, lv_color_hex(0x0088FF), 0);  // 深藍色
+            lv_label_set_text(weather_icon_label, "O");  // 雲 + 大雨滴
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0x0088FF), 0);  // 深藍色
         } else {
-            lv_label_set_text(icon_label, "o");
-            lv_obj_set_style_text_color(icon_label, lv_color_hex(0x00AAFF), 0);
+            lv_label_set_text(weather_icon_label, "o");
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0x00AAFF), 0);
         }
     } else if (strstr(desc, "Rain") || strstr(desc, "Drizzle")) {
         if (is_daytime) {
-            lv_label_set_text(icon_label, "M");                                  // 雲 + 小雨滴
-            lv_obj_set_style_text_color(icon_label, lv_color_hex(0x0088FF), 0);  // 淺藍色
+            lv_label_set_text(weather_icon_label, "M");  // 雲 + 小雨滴
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0x0088FF), 0);  // 淺藍色
         } else {
-            lv_label_set_text(icon_label, "m");                                  // 雲 + 小雨滴
-            lv_obj_set_style_text_color(icon_label, lv_color_hex(0x00AAFF), 0);  // 淺藍色
+            lv_label_set_text(weather_icon_label, "m");  // 雲 + 小雨滴
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0x00AAFF), 0);  // 淺藍色
         }
     } else if (strstr(desc, "Storm") || strstr(desc, "Thunder")) {
         if (is_daytime) {
-            lv_label_set_text(icon_label, "Q");  // 兩朵雲 + 閃電
-            lv_obj_set_style_text_color(icon_label, lv_color_black(), 0);
+            lv_label_set_text(weather_icon_label, "Q");  // 兩朵雲 + 閃電
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_black(), 0);
         } else {
-            lv_label_set_text(icon_label, "q");
-            lv_obj_set_style_text_color(icon_label, lv_color_white(), 0);
+            lv_label_set_text(weather_icon_label, "q");
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_white(), 0);
         }
     } else if (strstr(desc, "Snow")) {
         if (is_daytime) {
-            lv_label_set_text(icon_label, "H");  // 雲 + 兩片雪花
-            lv_obj_set_style_text_color(icon_label, lv_color_hex(0x44bbff), 0);
+            lv_label_set_text(weather_icon_label, "H");  // 雲 + 兩片雪花
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0x44bbff), 0);
         } else {
-            lv_label_set_text(icon_label, "i");  // 雲 + 兩片雪花
-            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xc0e0ff), 0);
+            lv_label_set_text(weather_icon_label, "i");  // 雲 + 兩片雪花
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0xc0e0ff), 0);
         }
     } else if (strstr(desc, "Fog") || strstr(desc, "Mist") || strstr(desc, "Haze")) {
         if (is_daytime) {
-            lv_label_set_text(icon_label, "B");  // 橫線 (霧)
-            lv_obj_set_style_text_color(icon_label, lv_color_hex(0x0088FF), 0);
+            lv_label_set_text(weather_icon_label, "B");  // 橫線 (霧)
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0x0088FF), 0);
         } else {
-            lv_label_set_text(icon_label, "c");  // 橫線 (霧)
-            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xBBBBBB), 0);
+            lv_label_set_text(weather_icon_label, "c");  // 橫線 (霧)
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0xBBBBBB), 0);
         }
     } else if (strstr(desc, "Wind")) {
         if (is_daytime) {
-            lv_label_set_text(icon_label, "D");  // 吹風線條
-            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xCCCCCC), 0);
+            lv_label_set_text(weather_icon_label, "D");  // 吹風線條
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0xCCCCCC), 0);
         } else {
-            lv_label_set_text(icon_label, "e");  // 吹風線條
-            lv_obj_set_style_text_color(icon_label, lv_color_hex(0xCCCCCC), 0);
+            lv_label_set_text(weather_icon_label, "e");  // 吹風線條
+            lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0xCCCCCC), 0);
         }
     } else {
-        lv_label_set_text(icon_label, "*");  // 未知
-        lv_obj_set_style_text_color(icon_label, lv_color_hex(0xCCCCCC), 0);
+        lv_label_set_text(weather_icon_label, "*");  // 未知
+        lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0xCCCCCC), 0);
     }
 }
 // --- 獨立的時間刷新函數 ---
@@ -609,15 +618,16 @@ static void update_clock_display() {
     strftime(min_str, sizeof(min_str), "%M", &timeinfo);
 
     strftime(date_str, sizeof(date_str), "%m-%d %a", &timeinfo);  // 例如 09-23 Wed
-    /*
-    int len = strlen(time_str);
-    if (len > 0 && (time_str[len - 1] == 'm' || time_str[len - 1] == 'M')) {
-        time_str[len - 1] = '\0';  // 將 'm' 替換 fluid 為字串結束符
+
+    if (time_mode_hour_label) {
+        lv_label_set_text(time_mode_hour_label, hour_str);
     }
-    */
-    lv_label_set_text(time_mode_hour_label, hour_str);
-    lv_label_set_text(time_mode_min_label, min_str);
-    lv_label_set_text(time_mode_date_label, date_str);
+    if (time_mode_min_label) {
+        lv_label_set_text(time_mode_min_label, min_str);
+    }
+    if (time_mode_date_label) {
+        lv_label_set_text(time_mode_date_label, date_str);
+    }
 
     // ==========================================
     // 更新電量與充電狀態
@@ -2809,34 +2819,230 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             lv_obj_add_flag(avatar_sleepy_z, LV_OBJ_FLAG_HIDDEN);
         if (game_menu_bg)
             lv_obj_add_flag(game_menu_bg, LV_OBJ_FLAG_HIDDEN);
-        if (bg_2048)
-            lv_obj_add_flag(bg_2048, LV_OBJ_FLAG_HIDDEN);
-        if (bg_snake)
-            lv_obj_add_flag(bg_snake, LV_OBJ_FLAG_HIDDEN);
-        if (bg_tictactoe)
-            lv_obj_add_flag(bg_tictactoe, LV_OBJ_FLAG_HIDDEN);
-        if (bg_bwa)
-            lv_obj_add_flag(bg_bwa, LV_OBJ_FLAG_HIDDEN);
-        if (bg_marksix)
-            lv_obj_add_flag(bg_marksix, LV_OBJ_FLAG_HIDDEN);
-        if (bg_timer)
-            lv_obj_add_flag(bg_timer, LV_OBJ_FLAG_HIDDEN);
-        if (bg_stopwatch)
-            lv_obj_add_flag(bg_stopwatch, LV_OBJ_FLAG_HIDDEN);
-        if (bg_level)
-            lv_obj_add_flag(bg_level, LV_OBJ_FLAG_HIDDEN);
-        if (bg_ir_learn)
-            lv_obj_add_flag(bg_ir_learn, LV_OBJ_FLAG_HIDDEN);
-        if (bg_space)
-            lv_obj_add_flag(bg_space, LV_OBJ_FLAG_HIDDEN);
-        if (bg_slot)
-            lv_obj_add_flag(bg_slot, LV_OBJ_FLAG_HIDDEN);
-        if (bg_breakout)
-            lv_obj_add_flag(bg_breakout, LV_OBJ_FLAG_HIDDEN);
-        if (bg_time_mode)
-            lv_obj_add_flag(bg_time_mode, LV_OBJ_FLAG_HIDDEN);
-        if (bg_weather_mode)
-            lv_obj_add_flag(bg_weather_mode, LV_OBJ_FLAG_HIDDEN);
+
+        if (current_ui_mode != 2) {
+            if (bg_space) {
+                lv_obj_del(bg_space);
+                bg_space = nullptr;
+                space_ship = nullptr;
+                space_score_label = nullptr;
+                space_overlay = nullptr;
+                space_overlay_label = nullptr;
+            }
+            if (bg_slot) {
+                lv_obj_del(bg_slot);
+                bg_slot = nullptr;
+                slot_score_label = nullptr;
+                slot_status_label = nullptr;
+                for (int i = 0; i < 3; i++) {
+                    slot_col[i] = nullptr;
+                    slot_reel[i] = nullptr;
+                    slot_img1[i] = nullptr;
+                    slot_img2[i] = nullptr;
+                }
+                slot_game_state = SLOT_STATE_IDLE;
+            }
+            if (bg_breakout) {
+                lv_obj_del(bg_breakout);
+                bg_breakout = nullptr;
+                bk_paddle = nullptr;
+                bk_ball = nullptr;
+                bk_score_label = nullptr;
+                bk_overlay = nullptr;
+                bk_overlay_label = nullptr;
+            }
+            if (bg_2048) {
+                lv_obj_del(bg_2048);
+                bg_2048 = nullptr;
+                score_label = nullptr;
+                overlay_2048 = nullptr;
+                overlay_label = nullptr;
+            }
+            if (bg_snake) {
+                lv_obj_del(bg_snake);
+                bg_snake = nullptr;
+                snake_score_label = nullptr;
+                food_obj = nullptr;
+                snake_overlay = nullptr;
+                snake_overlay_label = nullptr;
+            }
+            if (bg_tictactoe) {
+                lv_obj_del(bg_tictactoe);
+                bg_tictactoe = nullptr;
+                ttt_overlay = nullptr;
+                ttt_overlay_label = nullptr;
+                ttt_status_label = nullptr;
+                ttt_toast_bg = nullptr;
+                ttt_toast_label = nullptr;
+            }
+        } else {
+            if (game_menu_selection != GAME_SPACE && bg_space) {
+                lv_obj_del(bg_space);
+                bg_space = nullptr;
+                space_ship = nullptr;
+                space_score_label = nullptr;
+                space_overlay = nullptr;
+                space_overlay_label = nullptr;
+            }
+            if (game_menu_selection != GAME_SLOT && bg_slot) {
+                lv_obj_del(bg_slot);
+                bg_slot = nullptr;
+                slot_score_label = nullptr;
+                slot_status_label = nullptr;
+                for (int i = 0; i < 3; i++) {
+                    slot_col[i] = nullptr;
+                    slot_reel[i] = nullptr;
+                    slot_img1[i] = nullptr;
+                    slot_img2[i] = nullptr;
+                }
+                slot_game_state = SLOT_STATE_IDLE;
+            }
+            if (game_menu_selection != GAME_BREAKOUT && bg_breakout) {
+                lv_obj_del(bg_breakout);
+                bg_breakout = nullptr;
+                bk_paddle = nullptr;
+                bk_ball = nullptr;
+                bk_score_label = nullptr;
+                bk_overlay = nullptr;
+                bk_overlay_label = nullptr;
+            }
+            if (game_menu_selection != GAME_2048 && bg_2048) {
+                lv_obj_del(bg_2048);
+                bg_2048 = nullptr;
+                score_label = nullptr;
+                overlay_2048 = nullptr;
+                overlay_label = nullptr;
+            }
+            if (game_menu_selection != GAME_SNAKE && bg_snake) {
+                lv_obj_del(bg_snake);
+                bg_snake = nullptr;
+                snake_score_label = nullptr;
+                food_obj = nullptr;
+                snake_overlay = nullptr;
+                snake_overlay_label = nullptr;
+            }
+            if (game_menu_selection != GAME_TICTACTOE && bg_tictactoe) {
+                lv_obj_del(bg_tictactoe);
+                bg_tictactoe = nullptr;
+                ttt_overlay = nullptr;
+                ttt_overlay_label = nullptr;
+                ttt_status_label = nullptr;
+                ttt_toast_bg = nullptr;
+                ttt_toast_label = nullptr;
+            }
+        }
+
+        if (current_ui_mode != 5) {
+            if (bg_bwa) {
+                lv_obj_del(bg_bwa);
+                bg_bwa = nullptr;
+                bwa_1_bg = nullptr;
+                bwa_2_bg = nullptr;
+                bwa_result_label = nullptr;
+                bwa_desc_label = nullptr;
+            }
+            if (bg_marksix) {
+                lv_obj_del(bg_marksix);
+                bg_marksix = nullptr;
+                marksix_tip_label = nullptr;
+                for (int i = 0; i < 6; i++) {
+                    marksix_balls[i] = nullptr;
+                    marksix_labels[i] = nullptr;
+                }
+            }
+            if (bg_timer) {
+                lv_obj_del(bg_timer);
+                bg_timer = nullptr;
+                timer_time_label = nullptr;
+                timer_ms_label = nullptr;
+                timer_status_label = nullptr;
+            }
+            if (bg_stopwatch) {
+                lv_obj_del(bg_stopwatch);
+                bg_stopwatch = nullptr;
+                sw_time_label = nullptr;
+                sw_ms_label = nullptr;
+                sw_status_label = nullptr;
+            }
+            if (bg_level) {
+                lv_obj_del(bg_level);
+                bg_level = nullptr;
+                level_target_circle = nullptr;
+                inside_circle = nullptr;
+                level_bubble = nullptr;
+                level_info_label = nullptr;
+            }
+            if (bg_ir_learn) {
+                lv_obj_del(bg_ir_learn);
+                bg_ir_learn = nullptr;
+                ir_title_label = nullptr;
+                ir_icon_label = nullptr;
+                ir_status_label = nullptr;
+            }
+        } else {
+            if (app_menu_selection != APP_BWA && bg_bwa) {
+                lv_obj_del(bg_bwa);
+                bg_bwa = nullptr;
+                bwa_1_bg = nullptr;
+                bwa_2_bg = nullptr;
+                bwa_result_label = nullptr;
+                bwa_desc_label = nullptr;
+            }
+            if (app_menu_selection != APP_MARK6 && bg_marksix) {
+                lv_obj_del(bg_marksix);
+                bg_marksix = nullptr;
+                marksix_tip_label = nullptr;
+                for (int i = 0; i < 6; i++) {
+                    marksix_balls[i] = nullptr;
+                    marksix_labels[i] = nullptr;
+                }
+            }
+            if (app_menu_selection != APP_TIMER && bg_timer) {
+                lv_obj_del(bg_timer);
+                bg_timer = nullptr;
+                timer_time_label = nullptr;
+                timer_ms_label = nullptr;
+                timer_status_label = nullptr;
+            }
+            if (app_menu_selection != APP_STOPWATCH && bg_stopwatch) {
+                lv_obj_del(bg_stopwatch);
+                bg_stopwatch = nullptr;
+                sw_time_label = nullptr;
+                sw_ms_label = nullptr;
+                sw_status_label = nullptr;
+            }
+            if (app_menu_selection != APP_LEVEL && bg_level) {
+                lv_obj_del(bg_level);
+                bg_level = nullptr;
+                level_target_circle = nullptr;
+                inside_circle = nullptr;
+                level_bubble = nullptr;
+                level_info_label = nullptr;
+            }
+            if (app_menu_selection != APP_IR_LEARN && bg_ir_learn) {
+                lv_obj_del(bg_ir_learn);
+                bg_ir_learn = nullptr;
+                ir_title_label = nullptr;
+                ir_icon_label = nullptr;
+                ir_status_label = nullptr;
+            }
+        }
+        if (current_ui_mode != 3 && bg_time_mode) {
+            lv_obj_del(bg_time_mode);
+            bg_time_mode = nullptr;
+            time_mode_hour_label = nullptr;
+            time_mode_min_label = nullptr;
+            time_mode_date_label = nullptr;
+            time_mode_battery_label = nullptr;
+        }
+        if (current_ui_mode != 6 && bg_weather_mode) {
+            lv_obj_del(bg_weather_mode);
+            bg_weather_mode = nullptr;
+            weather_icon_container = nullptr;
+            weather_icon_label = nullptr;
+            weather_current_label = nullptr;
+            weather_hilo_label = nullptr;
+        }
 
         // 防呆：如果退出老虎機，務必清除背景無限運作的滾動動畫，避免浪費 CPU！
         if (current_ui_mode != 2 || game_menu_selection != GAME_SLOT) {
