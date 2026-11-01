@@ -2263,6 +2263,16 @@ static void start_mouth_animation() {
 }
 
 void CustomApp_OnChatMessage(const char* role, const char* content) {
+    // 全域靜音攔截器 (讓 AI 在遊戲中徹底閉嘴)
+    if (strcmp(role, "assistant") == 0) {
+        // 如果處於遊戲選單 (1) 或 遊戲中 (2)，強制截斷 AI 的語音輸出
+        if (current_system_mode == 1 || current_system_mode == 2) {
+            Application::GetInstance().Schedule(
+                []() { Application::GetInstance().AbortSpeaking(kAbortReasonNone); });
+            return;  // 直接返回，完全不處理 AI 的文字
+        }
+    }
+
     if (strcmp(role, "user") == 0 && content != nullptr) {
         std::string text(content);
 
@@ -3723,7 +3733,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             if (ttt_game_state == TTT_STATE_START || ttt_game_state == TTT_STATE_GAMEOVER) {
                 ttt_game_state = TTT_STATE_PLAYING;
                 memset(ttt_board, 0, sizeof(ttt_board));
-                ttt_user_turn = true;  // 語音下棋強制玩家先手
+                ttt_user_turn = (esp_random() % 2 == 0);  // 🎲 改為隨機先手
                 ttt_ai_delay_ticks = 0;
                 if (ttt_overlay)
                     lv_obj_add_flag(ttt_overlay, LV_OBJ_FLAG_HIDDEN);
@@ -3731,29 +3741,37 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 if (ttt_toast_bg) {
                     lv_obj_remove_flag(ttt_toast_bg, LV_OBJ_FLAG_HIDDEN);
                     ttt_toast_timer = 15;
-                    lv_label_set_text(ttt_toast_label, "Your Turn");
-                    lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0x00FF66), 0);
+                    if (ttt_user_turn) {
+                        lv_label_set_text(ttt_toast_label, "Your Turn");
+                        lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0x00FF66), 0);
+                    } else {
+                        lv_label_set_text(ttt_toast_label, "thinking...");
+                        lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0xFF3333), 0);
+                    }
                 }
             }
 
-            if (ttt_board[pending_ttt_r][pending_ttt_c] == 0) {
-                ttt_board[pending_ttt_r][pending_ttt_c] = 1;
-                ttt_user_turn = false;
-                ttt_ai_delay_ticks = 0;
+            // 落子判斷：只有在「玩家回合」才允許落子
+            if (ttt_user_turn) {
+                if (ttt_board[pending_ttt_r][pending_ttt_c] == 0) {
+                    ttt_board[pending_ttt_r][pending_ttt_c] = 1;
+                    ttt_user_turn = false;
+                    ttt_ai_delay_ticks = 0;
 
-                if (ttt_toast_bg) {
-                    lv_label_set_text(ttt_toast_label, "thinking...");
-                    lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0xFF3333), 0);
-                    lv_obj_remove_flag(ttt_toast_bg, LV_OBJ_FLAG_HIDDEN);
-                    ttt_toast_timer = 15;
-                }
-            } else {
-                // 已佔用提示
-                if (ttt_toast_bg) {
-                    lv_label_set_text(ttt_toast_label, "Taken!");
-                    lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0xFF3333), 0);
-                    lv_obj_remove_flag(ttt_toast_bg, LV_OBJ_FLAG_HIDDEN);
-                    ttt_toast_timer = 15;
+                    if (ttt_toast_bg) {
+                        lv_label_set_text(ttt_toast_label, "thinking...");
+                        lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0xFF3333), 0);
+                        lv_obj_remove_flag(ttt_toast_bg, LV_OBJ_FLAG_HIDDEN);
+                        ttt_toast_timer = 15;
+                    }
+                } else {
+                    // ⚠️ 位置已經被佔用的提示
+                    if (ttt_toast_bg) {
+                        lv_label_set_text(ttt_toast_label, "Taken!");
+                        lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0xFF3333), 0);
+                        lv_obj_remove_flag(ttt_toast_bg, LV_OBJ_FLAG_HIDDEN);
+                        ttt_toast_timer = 15;
+                    }
                 }
             }
             pending_ttt_r = -1;
@@ -3783,6 +3801,9 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                         lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0x00FF66), 0);
                         lv_obj_remove_flag(ttt_toast_bg, LV_OBJ_FLAG_HIDDEN);
                         ttt_toast_timer = 15;
+                    }
+                    if (ai_single_click_cb) {
+                        ai_single_click_cb();
                     }
                 }
             }
@@ -4367,14 +4388,19 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                                 lv_label_set_text(ttt_toast_label, "Your Turn");
                                 lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0x00FF66),
                                                             0);
+                                if (ai_single_click_cb) {
+                                    ai_single_click_cb();
+                                }
+
                             } else {
                                 lv_label_set_text(ttt_toast_label, "thinking...");
                                 lv_obj_set_style_text_color(ttt_toast_label, lv_color_hex(0xFF3333),
                                                             0);
                             }
                         }
-
-                    } else if (ttt_game_state == TTT_STATE_PLAYING) {
+                    }
+                    /*
+                    else if (ttt_game_state == TTT_STATE_PLAYING) {
                         ttt_game_state = TTT_STATE_PAUSE;
                         lv_label_set_text(ttt_overlay_label, "Paused");
                         lv_obj_remove_flag(ttt_overlay, LV_OBJ_FLAG_HIDDEN);
@@ -4383,6 +4409,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                         if (ttt_overlay)
                             lv_obj_add_flag(ttt_overlay, LV_OBJ_FLAG_HIDDEN);
                     }
+                            */
                 } else if (game_menu_selection == GAME_BREAKOUT) {
                     if (bk_game_state == BK_STATE_START || bk_game_state == BK_STATE_GAMEOVER) {
                         bk_game_state = BK_STATE_PLAYING;
@@ -6318,10 +6345,14 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
         } else if (current_system_mode == 2 || current_system_mode == 5) {
             // 【修正】確保在過三關中按鈕可以喚醒麥克風
             if (current_system_mode == 2 && game_menu_selection == GAME_TICTACTOE) {
-                ESP_LOGI("TicTacToe", "按下主按鍵，啟動麥克風聽取方位...");
-                if (ai_single_click_cb)
-                    ai_single_click_cb();
-                pending_game_action = 5;
+                if (ttt_game_state == TTT_STATE_START || ttt_game_state == TTT_STATE_GAMEOVER) {
+                    pending_game_action = 5;
+                } else {
+                    // 已開始：短按喚醒麥克風
+                    ESP_LOGI("TicTacToe", "按下主按鍵，啟動麥克風聽取方位...");
+                    if (ai_single_click_cb)
+                        ai_single_click_cb();
+                }
             } else {
                 // 其他遊戲保留暫停/開始功能
                 pending_game_action = 5;
