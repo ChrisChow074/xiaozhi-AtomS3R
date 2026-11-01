@@ -295,7 +295,13 @@ static void imu_init_task(void* pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
-    // 2. 拿到 I2C Bus 後，開始執行初始化 (這裡面的 Delay 就不會卡到畫面了)
+    // 【修復 2】：拿到 I2C 後先強制休眠 3 秒！
+    // 確保 Xiaozhi 主程式能順利完成 ES8311 音效晶片與電源管理晶片的初始化，
+    // 避免我們上傳巨大 IMU 韌體時霸佔 I2C 通道，導致系統觸發 abort() 不斷重啟。
+    ESP_LOGI("IMU", "已取得 I2C 權限，等待系統核心啟動完成...");
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    // 2. 開始執行初始化 (這裡面的 Delay 就不會卡到畫面了)
     ESP_LOGI("IMU", "背景任務開始初始化 BMI270...");
     imu_init();
 
