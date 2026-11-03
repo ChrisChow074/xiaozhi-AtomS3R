@@ -122,8 +122,10 @@ static lv_obj_t* right_eye_highlight = nullptr;
 // ==========================================
 // ✨ 待機動畫排程器與設定 ✨
 // ==========================================
-#define LOOK_MAX_X 6  // 【你可以在此調整】眼睛左右移動的最大幅度 (像素)
-#define LOOK_MAX_Y 4  // 【你可以在此調整】眼睛上下移動的最大幅度 (像素)
+#define LOOK_MAX_X 8        // 【你可以在此調整】眼睛左右移動的最大幅度 (像素)
+#define LOOK_MAX_Y 10       // 【你可以在此調整】眼睛上下移動的最大幅度 (像素)
+#define LOOK_MOUTH_MAX_X 6  // 嘴巴左右移動的最大幅度 (建議設為眼睛的一半)
+#define LOOK_MOUTH_MAX_Y 8  // 嘴巴上下移動的最大幅度 (稍微動一點點即可)
 
 static int current_look_pattern = 0;
 static int idle_anim_state = 0;   // 0:正常待機(眨眼), 1:四處看, 2:打呵欠
@@ -231,6 +233,9 @@ volatile int current_ui_mode = 0;
 volatile bool ui_mode_changed = false;
 volatile int pending_game_action = 0;
 volatile int pending_touch_wake = 0;  // 觸摸後的表情展示倒數
+
+static const char* volatile pending_emotion_cmd = nullptr;
+static volatile int petting_emotion_timer = 0;
 
 // 儲存原本 AI 模式下的按鍵動作
 static std::function<void()> ai_single_click_cb = nullptr;
@@ -452,7 +457,7 @@ static void bus_fetch_task(void* pvParameters) {
 }
 
 // ==========================================
-// G1 錫箔紙觸摸喚醒任務
+// G1 錫箔紙觸摸任務 (支援情緒互動與打斷說話)
 // ==========================================
 static void touch_wake_task(void* pvParameters) {
     // 1. 初始化 Touch 模組 (G1 對應 TOUCH_PAD_NUM1)
@@ -462,7 +467,8 @@ static void touch_wake_task(void* pvParameters) {
 
     uint32_t baseline = 0;
     int touch_cooldown = 0;
-    int log_timer = 0;
+    int touch_duration = 0;    // 記錄連續觸摸的時間
+    bool is_touching = false;  // 是否正在觸摸中
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(100));  // 每 100ms 讀取一次
@@ -473,12 +479,8 @@ static void touch_wake_task(void* pvParameters) {
         // 2. 智慧基準值 (Baseline) 自動校準
         if (baseline == 0 && touch_val > 0) {
             baseline = touch_val;
-        } else if (touch_val > 0 && touch_val < baseline + 2000) {
+        } else if (touch_val > 0 && touch_val < baseline + 2000 && !is_touching) {
             baseline = (baseline * 19 + touch_val) / 20;
-        }
-
-        if (++log_timer >= 20) {
-            log_timer = 0;
         }
 
         if (touch_cooldown > 0) {
@@ -486,34 +488,68 @@ static void touch_wake_task(void* pvParameters) {
             continue;
         }
 
-        // 4. 觸摸判定！
-        if (baseline > 0 && touch_val > baseline + 6000) {
-            touch_cooldown = 30;  // 觸發後冷卻 3 秒，防止連觸
+        // 3. 判斷當下是否正在被觸摸
+        bool current_touch = (baseline > 0 && touch_val > baseline + 6000);
 
-            // 👇 【修復關鍵】：加入 current_system_mode == 6，允許在天氣模式下觸摸喚醒！
-            if (current_system_mode == 0 || current_system_mode == 3 || current_system_mode == 6) {
-                DeviceState state = Application::GetInstance().GetDeviceState();
+        if (current_touch) {
+            if (!is_touching) {
+                is_touching = true;
+                touch_duration = 1;
 
-                // 確保 AI 是安靜待機的狀態，或是正處於時鐘/天氣模式
-                if (current_system_mode == 3 || current_system_mode == 6 ||
-                    state == kDeviceStateIdle) {
-                    ESP_LOGI("Touch", "🌟 錫箔紙觸摸喚醒！數值飆升至: %lu",
-                             (unsigned long)touch_val);
+                // 情況 A：如果是在時鐘或天氣模式，瞬間切回 AI 臉蛋並喚醒麥克風
+                if (current_system_mode == 3 || current_system_mode == 6) {
+                    auto backlight = Board::GetInstance().GetBacklight();
+                    if (backlight)
+                        backlight->SetBrightness(100);
+                    current_system_mode = 0;
+                    current_ui_mode = 0;
+                    ui_mode_changed = true;
+                    idle_to_clock_counter = 0;
+                    pending_touch_wake = 15;  // 觸發喚醒語音
 
-                    // 如果是在時鐘或天氣模式，瞬間切回 AI 臉蛋並點亮螢幕
-                    if (current_system_mode == 3 || current_system_mode == 6) {
-                        auto backlight = Board::GetInstance().GetBacklight();
-                        if (backlight)
-                            backlight->SetBrightness(100);
-                        current_system_mode = 0;
-                        current_ui_mode = 0;
-                        ui_mode_changed = true;
-                        idle_to_clock_counter = 0;
-                    }
-
-                    // 設定 1.5 秒倒數計時！
-                    pending_touch_wake = 15;
+                    is_touching = false;  // 處理完畢，提早重置狀態
+                    touch_cooldown = 30;  // 3秒冷卻
                 }
+                // 情況 B：如果在 AI 模式下正在說話 -> 立刻打斷！
+                else if (current_system_mode == 0) {
+                    DeviceState state = Application::GetInstance().GetDeviceState();
+                    if (state == kDeviceStateSpeaking) {
+                        Application::GetInstance().Schedule(
+                            []() { Application::GetInstance().AbortSpeaking(kAbortReasonNone); });
+                        ESP_LOGI("Touch", "🛑 觸控打斷 AI 說話！");
+                        is_touching = false;
+                        touch_cooldown = 15;
+                    }
+                }
+            } else {
+                // 持續觸摸中...
+                touch_duration++;
+
+                // 情況 C：AI 待機模式下，長按超過 1.5 秒 (15 ticks) -> 觸發長按生氣/無奈表情
+                if (current_system_mode == 0 && touch_duration == 15) {
+                    DeviceState state = Application::GetInstance().GetDeviceState();
+                    if (state == kDeviceStateIdle) {
+                        ESP_LOGI("Touch", "😠 摸太久了，發脾氣！");
+                        pending_emotion_cmd = (esp_random() % 2 == 0) ? "angry" : "confused";
+                        petting_emotion_timer = 20;  // 表情維持 2 秒
+                    }
+                }
+            }
+        } else {
+            // 放開觸摸
+            if (is_touching) {
+                // 情況 D：AI 待機模式下，短按放開 (< 1.5 秒) -> 觸發開心/愛心表情
+                if (current_system_mode == 0 && touch_duration < 15) {
+                    DeviceState state = Application::GetInstance().GetDeviceState();
+                    if (state == kDeviceStateIdle) {
+                        ESP_LOGI("Touch", "🥰 摸摸頭，很開心！");
+                        pending_emotion_cmd = (esp_random() % 2 == 0) ? "happy" : "loving";
+                        petting_emotion_timer = 20;  // 表情維持 2 秒
+                    }
+                }
+                is_touching = false;
+                touch_duration = 0;
+                touch_cooldown = 5;  // 短暫冷卻防連觸
             }
         }
     }
@@ -2057,10 +2093,10 @@ static void anim_mouth_snore_cb(void* var, int32_t v) {
 }
 
 // ==========================================
-// 待機四處看：動畫路徑計算與回呼
+// 待機四處看：動畫路徑計算與回呼 (含 3D 視差與全臉連動)
 // ==========================================
 static void anim_look_cb(void* var, int32_t v) {
-    if (!avatar_left_eye || !avatar_right_eye)
+    if (!avatar_left_eye || !avatar_right_eye || !avatar_mouth)
         return;
 
     // 定義 6 種模式的 P1(第一落點) 與 P2(第二落點) 方向
@@ -2068,51 +2104,73 @@ static void anim_look_cb(void* var, int32_t v) {
         int p1x, p1y, p2x, p2y;
     };
     static const LookPattern patterns[6] = {
-        // {-1, -1, -1, 1},   // 1: 左上 -> 左下
-        {-1, -1, -1, 0},   // 1: 左上 -> 左
-        {-1, -1, -1, -1},  // 1: 左上
-        // {1, -1, 1, 1},     // 2: 右上 -> 右下
-        {1, -1, 1, 0},  // 2: 右上 -> 右
-        {1, 1, 1, 1},   // 2: 右上
-        // {-1, -1, 1, -1},  // 3: 左上 -> 右上
-        // {1, -1, -1, -1},  // 4: 右上 -> 左上
-        {-1, 0, -1, -1},  // 5: 左 -> 左上
-        {1, 0, 1, 1}      // 6: 右 -> 右上
+        {-1, -1, -1, 1},  // 1: 左上 -> 左下
+        {1, -1, 1, 1},    // 2: 右上 -> 右下
+        {-1, -1, 1, -1},  // 3: 左上 -> 右上
+        {1, -1, -1, -1},  // 4: 右上 -> 左上
+        {-1, 0, 1, 0},    // 5: 望左 -> 望右
+        {1, 0, -1, 0}     // 6: 望右 -> 望左
     };
 
-    int tx = 0, ty = 0;
+    int tx = 0, ty = 0;  // 眼睛與上半部表情的偏移量
+    int mx = 0, my = 0;  // 嘴巴與下半部表情的偏移量 (幅度較小產生 3D 視差)
     int p = current_look_pattern;
 
-    // =========================================================
-    // ⏱️ 【動畫節奏控制器】總進度固定為 300
-    // 分配的數值區間越「小」，動作越「快」！
-    // =========================================================
-    int t1 = 50;   // 階段一 (中心 -> P1) : 佔用 0~50 (極快！)
-    int t2 = 250;  // 階段二 (P1 -> P2)   : 佔用 50~250 (很慢，有四處觀察的感覺)
-    int t3 = 300;  // 階段三 (P2 -> 中心) : 佔用 250~300 (極快，瞬間收回視線)
-    // =========================================================
+    int t1 = 50;
+    int t2 = 250;
+    int t3 = 300;
 
     if (v <= t1) {
-        // 階段一：中心 -> P1
         tx = (patterns[p].p1x * LOOK_MAX_X * v) / t1;
         ty = (patterns[p].p1y * LOOK_MAX_Y * v) / t1;
+        mx = (patterns[p].p1x * LOOK_MOUTH_MAX_X * v) / t1;
+        my = (patterns[p].p1y * LOOK_MOUTH_MAX_Y * v) / t1;
     } else if (v <= t2) {
-        // 階段二：P1 -> P2
-        int progress = ((v - t1) * 100) / (t2 - t1);  // 換算成 0~100% 的進度
+        int progress = ((v - t1) * 100) / (t2 - t1);
         tx = patterns[p].p1x * LOOK_MAX_X +
              ((patterns[p].p2x - patterns[p].p1x) * LOOK_MAX_X * progress) / 100;
         ty = patterns[p].p1y * LOOK_MAX_Y +
              ((patterns[p].p2y - patterns[p].p1y) * LOOK_MAX_Y * progress) / 100;
+        mx = patterns[p].p1x * LOOK_MOUTH_MAX_X +
+             ((patterns[p].p2x - patterns[p].p1x) * LOOK_MOUTH_MAX_X * progress) / 100;
+        my = patterns[p].p1y * LOOK_MOUTH_MAX_Y +
+             ((patterns[p].p2y - patterns[p].p1y) * LOOK_MOUTH_MAX_Y * progress) / 100;
     } else if (v <= t3) {
-        // 階段三：P2 -> 歸位(中心)
-        int progress = ((v - t2) * 100) / (t3 - t2);  // 換算成 0~100% 的進度
+        int progress = ((v - t2) * 100) / (t3 - t2);
         tx = patterns[p].p2x * LOOK_MAX_X - (patterns[p].p2x * LOOK_MAX_X * progress) / 100;
         ty = patterns[p].p2y * LOOK_MAX_Y - (patterns[p].p2y * LOOK_MAX_Y * progress) / 100;
+        mx = patterns[p].p2x * LOOK_MOUTH_MAX_X -
+             (patterns[p].p2x * LOOK_MOUTH_MAX_X * progress) / 100;
+        my = patterns[p].p2y * LOOK_MOUTH_MAX_Y -
+             (patterns[p].p2y * LOOK_MOUTH_MAX_Y * progress) / 100;
     }
 
-    // 將偏移量即時套用到眼睛 (不會破壞重力傾斜，因為它是相對於臉部容器)
-    lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L + tx, EYE_POS_H + ty);
-    lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R + tx, EYE_POS_H + ty);
+    // ==========================================
+    // 🚀 【核心修復】使用 translate 平移，不破壞原本的動畫與座標
+    // ==========================================
+
+    // 1. 眼睛與所有上半部裝飾 (使用 tx, ty)
+    // 這樣一來，不論是眼淚、汗水、愛心還是青筋，都會完美跟著眼睛移動！
+    lv_obj_t* eye_parts[] = {
+        avatar_left_eye, avatar_right_eye, avatar_sad_eye,  avatar_surprised_eye, avatar_angry_eye,
+        avatar_cool,     avatar_confuse,   avatar_tears,    avatar_sweat,         avatar_embrassing,
+        avatar_anger,    avatar_heart,     avatar_sleepy_z, avatar_swallow};
+    for (int i = 0; i < sizeof(eye_parts) / sizeof(eye_parts[0]); i++) {
+        if (eye_parts[i]) {
+            lv_obj_set_style_translate_x(eye_parts[i], tx, 0);
+            lv_obj_set_style_translate_y(eye_parts[i], ty, 0);
+        }
+    }
+
+    // 2. 所有嘴巴形態 (使用 mx, my，產生 3D 視差)
+    lv_obj_t* mouth_parts[] = {avatar_mouth, avatar_mouth_happy, avatar_mouth_laugh,
+                               avatar_silly_tongue, avatar_kissy};
+    for (int i = 0; i < sizeof(mouth_parts) / sizeof(mouth_parts[0]); i++) {
+        if (mouth_parts[i]) {
+            lv_obj_set_style_translate_x(mouth_parts[i], mx, 0);
+            lv_obj_set_style_translate_y(mouth_parts[i], my, 0);
+        }
+    }
 }
 
 static void trigger_idle_look() {
@@ -2560,6 +2618,26 @@ static void slot_stop_reel(int col) {
 
 // --- 定時器：控制畫面刷新與狀態 ---
 static void custom_app_timer_cb(lv_timer_t* timer) {
+    // ===== 插入這段處理情緒互動的邏輯 =====
+    if (pending_emotion_cmd != nullptr) {
+        CustomApp_SetEmotion(pending_emotion_cmd);
+        pending_emotion_cmd = nullptr;
+    }
+
+    if (petting_emotion_timer > 0) {
+        petting_emotion_timer = petting_emotion_timer - 1;
+        if (petting_emotion_timer == 0) {
+            // 互動時間結束，如果還在待機狀態，就恢復平靜
+            if (Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
+                CustomApp_SetEmotion("neutral");
+                // 重新啟動待機排程器 (承接你剛才裝上的四處看與打呼功能)
+                idle_anim_state = 0;
+                idle_anim_timer = 10;
+                idle_look_count = 0;
+            }
+        }
+    }
+
     // ==============================================
     // 【最高優先級】如果正在顯示巴士資訊，蓋住一切畫面 8 秒鐘！
     // ==============================================
@@ -4872,15 +4950,10 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     if (pending_touch_wake > 0) {
         if (pending_touch_wake == 15) {
             // 剛摸到的瞬間：隨機選取 6 種表情之一
-            const char* random_emotions[] = {"happy",
-                                             "loving",
-                                             "silly",
-                                             "angry",
+            const char* random_emotions[] = {"angry",
                                              "thinking"
-                                             "cool",
                                              "sleepy",
-                                             "confused",
-                                             "surprised"};
+                                             "confused"};
             int total_emotions = sizeof(random_emotions) / sizeof(random_emotions[0]);
             int rand_idx = esp_random() % total_emotions;
             CustomApp_SetEmotion(random_emotions[rand_idx]);
@@ -5818,20 +5891,35 @@ void CustomApp_InitUI(lv_obj_t* parent) {
 }
 
 static void reset_avatar_geometry() {
+    // 1. 先把所有零件的「平移量」瞬間歸零，防止動畫被打斷時五官歪掉
+    lv_obj_t* all_parts[] = {
+        avatar_left_eye,    avatar_right_eye,    avatar_sad_eye, avatar_surprised_eye,
+        avatar_angry_eye,   avatar_cool,         avatar_confuse, avatar_tears,
+        avatar_sweat,       avatar_embrassing,   avatar_anger,   avatar_heart,
+        avatar_sleepy_z,    avatar_swallow,      avatar_mouth,   avatar_mouth_happy,
+        avatar_mouth_laugh, avatar_silly_tongue, avatar_kissy};
+    for (int i = 0; i < sizeof(all_parts) / sizeof(all_parts[0]); i++) {
+        if (all_parts[i]) {
+            lv_obj_set_style_translate_x(all_parts[i], 0, 0);
+            lv_obj_set_style_translate_y(all_parts[i], 0, 0);
+        }
+    }
+
+    // 2. 恢復原本的對齊邏輯
     if (avatar_left_eye) {
         lv_obj_set_size(avatar_left_eye, EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);
-        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H);  // 基準左眼
+        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H);
     }
     if (avatar_right_eye) {
         lv_obj_set_size(avatar_right_eye, EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);
-        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H);  // 基準右眼
+        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H);
     }
     if (avatar_mouth) {
         lv_obj_set_size(avatar_mouth, MOUTH_BASE_W, MOUTH_BASE_H);
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
-        lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);  // 基準嘴巴 (置中)
+        lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
     }
 }
 
@@ -5918,7 +6006,7 @@ void CustomApp_SetEmotion(const char* emotion) {
         if (right_eye_highlight)
             lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
-        lv_obj_set_size(avatar_mouth, 25, 12);
+        lv_obj_set_size(avatar_mouth, 1, 1);
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
 
         // 顯示愛心
