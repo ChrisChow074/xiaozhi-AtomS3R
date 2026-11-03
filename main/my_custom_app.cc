@@ -63,11 +63,11 @@ static const char* pending_emotion_cmd = nullptr;  // 用來安全傳遞表情�
 
 #define EYE_BASE_W 28  // 眼睛基準寬度 (original 22)
 #define EYE_BASE_H 37  // 眼睛基準高度 (original 30)
-#define EYE_POS_L -33  // (original 30)
-#define EYE_POS_R 33   // (original -30)
+#define EYE_POS_L -32  // (original 30)
+#define EYE_POS_R 32   // (original -30)
 #define EYE_POS_H -6
 #define EYE_CORNER 12  // (LV_RADIUS_CIRCLE)
-#define MOUTH_BASE_W 24
+#define MOUTH_BASE_W 22
 #define MOUTH_BASE_H 8
 #define MOUTH_POS_H 20
 
