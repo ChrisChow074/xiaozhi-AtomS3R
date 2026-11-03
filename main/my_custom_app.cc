@@ -123,7 +123,6 @@ static lv_obj_t* right_eye_highlight = nullptr;
 // ==========================================
 static int current_eye_base_w = EYE_BASE_W;
 static int current_eye_base_h = EYE_BASE_H;
-static int current_mouth_base_w = MOUTH_BASE_W;
 static int current_anim_offset_h_left = 0;
 static int current_anim_offset_h_right = 0;
 static int current_anim_offset_w_left = 0;
@@ -145,8 +144,6 @@ static void update_eye_size_realtime() {
         base_l_w = 2;
     if (base_l_h < 2)
         base_l_h = 2;
-    if (base_lm_w < 2)
-        base_lm_w = 2;
 
     // 重力透視縮放：傾斜時最多縮小一半 (例如 22 -> 11)
     int squish_l_w = (abs(global_accel_x) * (base_l_w / MOVE_EYE_W)) / 4096;
@@ -4892,13 +4889,18 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
 
+        if (left_eye_highlight)
+            lv_obj_remove_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_remove_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
         if (backlight)
             backlight->SetBrightness(100);
     } else if (current_state == kDeviceStateSpeaking) {
         if (backlight)
             backlight->SetBrightness(100);
 
-        if (current_active_emotion != "laughing" || current_active_emotion != "happy") {
+        if (current_active_emotion != "laughing" && current_active_emotion != "happy") {
             if (avatar_mouth_laugh)
                 lv_obj_add_flag(avatar_mouth_laugh, LV_OBJ_FLAG_HIDDEN);
             if (avatar_mouth_happy)
@@ -4924,6 +4926,11 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
             lv_anim_start(&a);
 
+            if (left_eye_highlight)
+                lv_obj_remove_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+            if (right_eye_highlight)
+                lv_obj_remove_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
             start_blink_animation();
         } else {
             lv_obj_add_flag(avatar_mouth, LV_OBJ_FLAG_HIDDEN);
@@ -4940,6 +4947,11 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);
         lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);
+
+        if (left_eye_highlight)
+            lv_obj_remove_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_remove_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
         lv_obj_remove_flag(avatar_mouth, LV_OBJ_FLAG_HIDDEN);
         if (avatar_sad_eye)
@@ -4995,7 +5007,8 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // avatar_theme_color = lv_obj_get_style_text_color(parent, LV_PART_MAIN); //黑色
     lv_obj_set_style_text_color(parent, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
-    avatar_theme_color = lv_color_make(255, 100, 0);
+    // avatar_theme_color = lv_color_make(255, 100, 0); // 橙色
+    avatar_theme_color = lv_color_make(0, 170, 255);
 
     // ==============================================
     // 【新增】建立一個臉部總容器，用來做重力跟隨移動
@@ -5887,6 +5900,10 @@ void CustomApp_SetEmotion(const char* emotion) {
     } else if (emo_str == "confused") {
         // 無奈表情：左眼變扁、右眼縮小，嘴巴變成一條扁平橫線
         set_eye_size(EYE_BASE_W + 6, 8);
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 1);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 1);
         lv_obj_set_size(avatar_mouth, MOUTH_BASE_W + 6, MOUTH_BASE_H);  // 扁嘴
@@ -5900,6 +5917,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         // 憤怒表情：瞇眼、嘴角緊抿
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_size(avatar_mouth, 26, 32);
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
         // 彈出 💢 青筋符號並加上微幅震顫/跳動動畫！
         if (avatar_anger) {
@@ -5923,6 +5944,11 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W, 12);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
         lv_obj_set_size(avatar_mouth, 16, 6);
         if (avatar_embrassing) {
             lv_obj_remove_flag(avatar_embrassing, LV_OBJ_FLAG_HIDDEN);
@@ -6020,6 +6046,11 @@ void CustomApp_SetEmotion(const char* emotion) {
         }
     } else if (emo_str == "cool") {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
         lv_obj_set_size(avatar_mouth, 3, 3);
         if (avatar_mouth_happy) {
             lv_obj_remove_flag(avatar_mouth_happy, LV_OBJ_FLAG_HIDDEN);
