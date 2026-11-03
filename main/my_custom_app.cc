@@ -61,13 +61,13 @@ const int CLOCK_DIM_TIMEOUT_SEC = 5;  // 亮起後等待幾秒自動變暗 (可�
 
 static const char* pending_emotion_cmd = nullptr;  // 用來安全傳遞表情指令
 
-#define EYE_BASE_W 27  // 眼睛基準寬度 (original 22)
-#define EYE_BASE_H 33  // 眼睛基準高度 (original 30)
-#define EYE_POS_L -31  // (original 30)
-#define EYE_POS_R 31   // (original -30)
+#define EYE_BASE_W 28  // 眼睛基準寬度 (original 22)
+#define EYE_BASE_H 37  // 眼睛基準高度 (original 30)
+#define EYE_POS_L -33  // (original 30)
+#define EYE_POS_R 33   // (original -30)
 #define EYE_POS_H -6
-#define EYE_CORNER 11  // (LV_RADIUS_CIRCLE)
-#define MOUTH_BASE_W 26
+#define EYE_CORNER 12  // (LV_RADIUS_CIRCLE)
+#define MOUTH_BASE_W 24
 #define MOUTH_BASE_H 8
 #define MOUTH_POS_H 20
 
@@ -131,6 +131,19 @@ static lv_obj_t* avatar_left_eye = nullptr;
 static lv_obj_t* avatar_right_eye = nullptr;
 static lv_obj_t* left_eye_highlight = nullptr;
 static lv_obj_t* right_eye_highlight = nullptr;
+
+// ==========================================
+// ✨ 待機動畫排程器與設定 ✨
+// ==========================================
+#define LOOK_MAX_X 8        // 【你可以在此調整】眼睛左右移動的最大幅度 (像素)
+#define LOOK_MAX_Y 10       // 【你可以在此調整】眼睛上下移動的最大幅度 (像素)
+#define LOOK_MOUTH_MAX_X 6  // 嘴巴左右移動的最大幅度 (建議設為眼睛的一半)
+#define LOOK_MOUTH_MAX_Y 8  // 嘴巴上下移動的最大幅度 (稍微動一點點即可)
+
+static int current_look_pattern = 0;
+static int idle_anim_state = 0;   // 0:正常待機(眨眼), 1:四處看, 2:打呵欠
+static int idle_anim_timer = 30;  // 動作倒數計時器
+static int idle_look_count = 0;   // 已經連續看了幾次
 // ==========================================
 // ✨ 眼睛透視與動畫集中式渲染引擎 ✨
 // ==========================================
@@ -2248,7 +2261,7 @@ static void start_blink_animation() {
     lv_anim_set_values(&a, EYE_BASE_H, 2);
     lv_anim_set_duration(&a, 100);
     lv_anim_set_playback_time(&a, 100);
-    lv_anim_set_repeat_delay(&a, 3000);
+    lv_anim_set_repeat_delay(&a, 6000);
     lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
     lv_anim_set_var(&a, avatar_left_eye);
     lv_anim_start(&a);
@@ -2268,25 +2281,6 @@ static void anim_eye_snore_cb(void* var, int32_t v) {
     int32_t cur_y = base_y - (move_up_max * v / 100);
     lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, cur_y);
     lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, cur_y);
-}
-
-static void start_eye_snore_animation() {
-    if (!avatar_left_eye || !avatar_right_eye)
-        return;
-
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_exec_cb(&a, anim_eye_snore_cb);  // 綁定剛剛的回呼函式
-    lv_anim_set_values(&a, 0, 100);              // 0% -> 100%
-
-    // 與嘴巴的打呼節奏完全同步
-    lv_anim_set_duration(&a, 600);            // 100ms: 快速閉眼 + 向上提
-    lv_anim_set_playback_duration(&a, 2400);  // 1200ms: 隨吐氣緩緩下沉復位
-    lv_anim_set_repeat_delay(&a, 12000);      // 10秒後進行下一次打呼
-    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-
-    lv_anim_set_var(&a, avatar_left_eye);  // var 填任一物件即可
-    lv_anim_start(&a);
 }
 
 static void anim_mouth_snore_cb(void* var, int32_t v) {
@@ -2319,25 +2313,120 @@ static void anim_mouth_snore_cb(void* var, int32_t v) {
     lv_obj_align(obj, LV_ALIGN_CENTER, 0, cur_y);  // 保持居中
 }
 
+// ==========================================
+// 待機四處看：動畫路徑計算與回呼 (含嘴巴 3D 視差版)
+// ==========================================
+static void anim_look_cb(void* var, int32_t v) {
+    if (!avatar_left_eye || !avatar_right_eye || !avatar_mouth)
+        return;
+
+    // 定義 6 種模式的 P1(第一落點) 與 P2(第二落點) 方向
+    struct LookPattern {
+        int p1x, p1y, p2x, p2y;
+    };
+    static const LookPattern patterns[10] = {
+        {-1, -1, -1, 0},   // 1: 左上 -> 左
+        {-1, -1, -1, -1},  // 1: 左上
+        {1, -1, 1, 0},     // 2: 右上 -> 右
+        {1, 1, 1, 1},      // 2: 右上
+        {-1, 0, -1, -1},   // 5: 左 -> 左上
+        {1, 0, 1, 1},      // 6: 右 -> 右上
+        {-1, -1, -1, 1},   // 1: 左上 -> 左下
+        {1, -1, 1, 1},     // 2: 右上 -> 右下
+        {-1, -1, 1, -1},   // 3: 左上 -> 右上
+        {1, -1, -1, -1},   // 4: 右上 -> 左上
+    };
+
+    int tx = 0, ty = 0;  // 眼睛的偏移量
+    int mx = 0, my = 0;  // 嘴巴的偏移量
+    int p = current_look_pattern;
+
+    // =========================================================
+    // ⏱️ 【動畫節奏控制器】總進度固定為 300
+    // 分配的數值區間越「小」，動作越「快」！
+    // =========================================================
+    int t1 = 50;   // 階段一 (中心 -> P1) : 佔用 0~50 (極快！)
+    int t2 = 250;  // 階段二 (P1 -> P2)   : 佔用 50~250 (很慢，有四處觀察的感覺)
+    int t3 = 300;  // 階段三 (P2 -> 中心) : 佔用 250~300 (極快，瞬間收回視線)
+    // =========================================================
+
+    if (v <= t1) {
+        // 階段一：中心 -> P1
+        tx = (patterns[p].p1x * LOOK_MAX_X * v) / t1;
+        ty = (patterns[p].p1y * LOOK_MAX_Y * v) / t1;
+        // 同步計算嘴巴偏移
+        mx = (patterns[p].p1x * LOOK_MOUTH_MAX_X * v) / t1;
+        my = (patterns[p].p1y * LOOK_MOUTH_MAX_Y * v) / t1;
+    } else if (v <= t2) {
+        // 階段二：P1 -> P2
+        int progress = ((v - t1) * 100) / (t2 - t1);
+        tx = patterns[p].p1x * LOOK_MAX_X +
+             ((patterns[p].p2x - patterns[p].p1x) * LOOK_MAX_X * progress) / 100;
+        ty = patterns[p].p1y * LOOK_MAX_Y +
+             ((patterns[p].p2y - patterns[p].p1y) * LOOK_MAX_Y * progress) / 100;
+        // 同步計算嘴巴偏移
+        mx = patterns[p].p1x * LOOK_MOUTH_MAX_X +
+             ((patterns[p].p2x - patterns[p].p1x) * LOOK_MOUTH_MAX_X * progress) / 100;
+        my = patterns[p].p1y * LOOK_MOUTH_MAX_Y +
+             ((patterns[p].p2y - patterns[p].p1y) * LOOK_MOUTH_MAX_Y * progress) / 100;
+    } else if (v <= t3) {
+        // 階段三：P2 -> 歸位(中心)
+        int progress = ((v - t2) * 100) / (t3 - t2);
+        tx = patterns[p].p2x * LOOK_MAX_X - (patterns[p].p2x * LOOK_MAX_X * progress) / 100;
+        ty = patterns[p].p2y * LOOK_MAX_Y - (patterns[p].p2y * LOOK_MAX_Y * progress) / 100;
+        // 同步計算嘴巴偏移
+        mx = patterns[p].p2x * LOOK_MOUTH_MAX_X -
+             (patterns[p].p2x * LOOK_MOUTH_MAX_X * progress) / 100;
+        my = patterns[p].p2y * LOOK_MOUTH_MAX_Y -
+             (patterns[p].p2y * LOOK_MOUTH_MAX_Y * progress) / 100;
+    }
+
+    // 將偏移量即時套用到眼睛 (不會破壞重力傾斜，因為它是相對於臉部容器)
+    lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L + tx, EYE_POS_H + ty);
+    lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R + tx, EYE_POS_H + ty);
+    // 套用嘴巴偏移 (因為嘴巴原始 X 座標準位是 0，Y 是 MOUTH_POS_H)
+    lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0 + mx, MOUTH_POS_H + my);
+}
+
+static void trigger_idle_look() {
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, avatar_left_eye);  // 隨便綁定一個物件作為觸發載體
+    lv_anim_set_exec_cb(&a, anim_look_cb);
+    lv_anim_set_values(&a, 0, 300);
+    lv_anim_set_duration(&a, 1800);   // 總共花 (1500)1.5 秒看完
+    lv_anim_set_repeat_count(&a, 1);  // 👈 只播放 1 次
+    lv_anim_start(&a);
+}
+
+// 將原本無限迴圈的打呼改為「單次」打呵欠
+static void start_eye_snore_animation() {
+    if (!avatar_left_eye || !avatar_right_eye)
+        return;
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_exec_cb(&a, anim_eye_snore_cb);
+    lv_anim_set_values(&a, 0, 100);
+    lv_anim_set_duration(&a, 600);
+    lv_anim_set_playback_duration(&a, 2400);
+    lv_anim_set_repeat_count(&a, 1);  // 👈 只播放 1 次
+    lv_anim_set_var(&a, avatar_left_eye);
+    lv_anim_start(&a);
+}
+
 static void start_mouth_animation() {
     if (!avatar_mouth)
         return;
-
-    // 先清除可能正在運行的嘴巴動畫
     lv_anim_del(avatar_mouth, NULL);
-
-    // 【關鍵】立刻重設為合口尺寸 (寬 38，高 8)，避免切換表情時尺寸不對
     lv_obj_set_size(avatar_mouth, MOUTH_BASE_W, MOUTH_BASE_H);
     lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
-
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_exec_cb(&a, anim_mouth_snore_cb);
-    lv_anim_set_values(&a, 0, 100);           // 0 (合口38) -> 100 (張口)
-    lv_anim_set_duration(&a, 600);            // 200ms 快速張嘴吸氣
-    lv_anim_set_playback_duration(&a, 2400);  // 1200ms 慢慢吐氣合嘴，回到寬度 38
-    lv_anim_set_repeat_delay(&a, 12000);      // 維持合嘴狀態 10 秒
-    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_values(&a, 0, 100);
+    lv_anim_set_duration(&a, 600);
+    lv_anim_set_playback_duration(&a, 2400);
+    lv_anim_set_repeat_count(&a, 1);  // 👈 只播放 1 次
     lv_anim_set_var(&a, avatar_mouth);
     lv_anim_start(&a);
 }
@@ -5343,8 +5432,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     if (current_state == kDeviceStateIdle) {
         idle_to_clock_counter++;
         // 🌟 核心修改：判斷目前是不是塔羅模式
-        // 如果是，設定為 9000 (15分鐘)；如果不是，設定為 1800 (3分鐘)
-        int timeout_limit = is_tarot_mode ? 9000 : 1800;
+        // 如果是，設定為 9000 (15分鐘)；如果不是，設定為 1800 (3分鐘) 6000 (10分鐘)
+        int timeout_limit = is_tarot_mode ? 9000 : 6000;
 
         if (idle_to_clock_counter >= timeout_limit) {
             idle_to_clock_counter = 0;
@@ -5370,8 +5459,49 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     }
 
     // 2. 只有狀態發生「變化」時，才重新建立/切換表情動畫
-    if (current_state == last_avatar_state)
+    if (current_state == last_avatar_state) {
+        // =======================================================
+        // 🔄 待機模式的動態排程器 (負責四處看與打呵欠)
+        // =======================================================
+        if (current_state == kDeviceStateIdle && current_ui_mode == 0) {
+            if (idle_anim_timer > 0) {
+                idle_anim_timer--;
+                if (idle_anim_timer == 0) {
+                    if (idle_anim_state == 0) {
+                        // 決定下一個動作：隨機 2~3 次「四處看」後，來 1 次「打呵欠」
+                        if (idle_look_count < (2 + esp_random() % 2)) {
+                            // [動作] 四處看 (此時眨眼動畫依然自然運行！)
+                            current_look_pattern = esp_random() % 6;
+                            trigger_idle_look();
+                            idle_anim_state = 1;
+                            idle_anim_timer = 15;  // 四處看動畫耗時 1.5 秒 (15*100ms)
+                            idle_look_count++;
+                        } else {
+                            // [動作] 打呵欠
+                            lv_anim_del(avatar_left_eye,
+                                        anim_blink_cb);  // 暫停普通眨眼，專心打呵欠
+                            lv_anim_del(avatar_right_eye, anim_blink_cb);
+                            start_eye_snore_animation();
+                            start_mouth_animation();
+                            idle_anim_state = 2;
+                            idle_anim_timer = 30;  // 打呵欠動畫耗時 3.0 秒
+                            idle_look_count = 0;
+                        }
+                    } else if (idle_anim_state == 1) {
+                        // 四處看結束，回到待機
+                        idle_anim_state = 0;
+                        idle_anim_timer = 20 + esp_random() % 30;  // 隨機等待 2~5 秒後做下一個動作
+                    } else if (idle_anim_state == 2) {
+                        // 打呵欠結束，恢復眨眼，回到待機
+                        start_blink_animation();
+                        idle_anim_state = 0;
+                        idle_anim_timer = 30 + esp_random() % 40;  // 隨機等待 3~7 秒後做下一個動作
+                    }
+                }
+            }
+        }
         return;
+    }
 
     last_avatar_state = current_state;
 
@@ -5492,8 +5622,10 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
 
-        start_eye_snore_animation();
-        start_mouth_animation();
+        start_blink_animation();
+        idle_anim_state = 0;
+        idle_anim_timer = 30;  // 初次進入待機，等 3 秒後才開始第一次動作
+        idle_look_count = 0;
     }
 }
 
