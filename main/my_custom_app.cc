@@ -61,15 +61,15 @@ const int CLOCK_DIM_TIMEOUT_SEC = 5;  // 亮起後等待幾秒自動變暗 (可�
 
 static const char* pending_emotion_cmd = nullptr;  // 用來安全傳遞表情指令
 
-#define EYE_BASE_W 22  // 眼睛基準寬度 (original 22)
-#define EYE_BASE_H 31  // 眼睛基準高度 (original 30)
+#define EYE_BASE_W 27  // 眼睛基準寬度 (original 22)
+#define EYE_BASE_H 33  // 眼睛基準高度 (original 30)
 #define EYE_POS_L -31  // (original 30)
 #define EYE_POS_R 31   // (original -30)
-#define EYE_POS_H -10
-#define EYE_CORNER 10  // (LV_RADIUS_CIRCLE)
+#define EYE_POS_H -6
+#define EYE_CORNER 11  // (LV_RADIUS_CIRCLE)
 #define MOUTH_BASE_W 26
 #define MOUTH_BASE_H 8
-#define MOUTH_POS_H 14
+#define MOUTH_POS_H 20
 
 // ==========================================
 //           螢幕解析度常數 (M5StickS3)
@@ -143,7 +143,7 @@ static int current_anim_offset_w_right = 0;
 static int16_t global_accel_x = 0;
 static int16_t global_accel_y = 0;
 
-#define MOVE_EYE_W 4
+#define MOVE_EYE_W 5
 #define MOVE_EYE_H 4
 
 static void update_eye_size_realtime() {
@@ -2346,7 +2346,7 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
     // 全域靜音攔截器 (讓 AI 在遊戲中徹底閉嘴)
     if (strcmp(role, "assistant") == 0) {
         // 如果處於遊戲選單 (1) 或 遊戲中 (2)，強制截斷 AI 的語音輸出
-        if (current_system_mode == 1 || current_system_mode == 2) {
+        if (current_system_mode != 0) {
             Application::GetInstance().Schedule(
                 []() { Application::GetInstance().AbortSpeaking(kAbortReasonNone); });
             return;  // 直接返回，完全不處理 AI 的文字
@@ -5393,13 +5393,18 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
 
+        if (left_eye_highlight)
+            lv_obj_remove_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_remove_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
         if (backlight)
             backlight->SetBrightness(100);
     } else if (current_state == kDeviceStateSpeaking) {
         if (backlight)
             backlight->SetBrightness(100);
 
-        if (current_active_emotion != "laughing" || current_active_emotion != "happy") {
+        if (current_active_emotion != "laughing" && current_active_emotion != "happy") {
             if (avatar_mouth_laugh)
                 lv_obj_add_flag(avatar_mouth_laugh, LV_OBJ_FLAG_HIDDEN);
             if (avatar_mouth_happy)
@@ -5424,6 +5429,10 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             lv_anim_set_playback_time(&a, 150);
             lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
             lv_anim_start(&a);
+            if (left_eye_highlight)
+                lv_obj_remove_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+            if (right_eye_highlight)
+                lv_obj_remove_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
             start_blink_animation();
         } else {
@@ -5440,6 +5449,10 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);
         lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);
+        if (left_eye_highlight)
+            lv_obj_remove_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_remove_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
         lv_obj_remove_flag(avatar_mouth, LV_OBJ_FLAG_HIDDEN);
         if (avatar_sad_eye)
@@ -6312,7 +6325,7 @@ void CustomApp_SetEmotion(const char* emotion) {
         }
 
     } else if (emo_str == "crying") {
-        set_eye_size(EYE_BASE_W, 10);  // 眼睛瞇起來哭
+        set_eye_size(EYE_BASE_W, 8);  // 眼睛瞇起來哭
         // lv_obj_set_size(avatar_mouth, 20, 20);        // 嘴巴張大哭
         lv_obj_set_style_radius(avatar_mouth, 8, 0);  // 嘴巴帶點圓角
         if (left_eye_highlight)
@@ -6384,6 +6397,11 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W + 6, 8);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 1);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 1);
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
         lv_obj_set_size(avatar_mouth, MOUTH_BASE_W + 6, MOUTH_BASE_H);  // 扁嘴
         if (avatar_confuse) {
             lv_obj_remove_flag(avatar_confuse, LV_OBJ_FLAG_HIDDEN);
@@ -6415,9 +6433,14 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_remove_flag(avatar_angry_eye, LV_OBJ_FLAG_HIDDEN);
         }
     } else if (emo_str == "embarrassed") {
-        set_eye_size(EYE_BASE_W, 12);
+        set_eye_size(EYE_BASE_W, 10);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
         lv_obj_set_size(avatar_mouth, 16, 6);
         if (avatar_embrassing) {
             lv_obj_remove_flag(avatar_embrassing, LV_OBJ_FLAG_HIDDEN);
@@ -6483,6 +6506,7 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_highlight)
             lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
         lv_obj_set_size(avatar_mouth, 1, 1);
 
         if (avatar_embrassing) {
@@ -6516,6 +6540,10 @@ void CustomApp_SetEmotion(const char* emotion) {
     } else if (emo_str == "cool") {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_size(avatar_mouth, 3, 3);
+        if (left_eye_highlight)
+            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_highlight)
+            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         if (avatar_mouth_happy) {
             lv_obj_remove_flag(avatar_mouth_happy, LV_OBJ_FLAG_HIDDEN);
         }
@@ -6551,13 +6579,14 @@ void CustomApp_SetEmotion(const char* emotion) {
     } else if (emo_str == "relaxed") {
         set_eye_size(EYE_BASE_W, 8);
         lv_obj_set_size(avatar_mouth, 20, MOUTH_BASE_H);
-        if (avatar_mouth_happy) {
-            lv_obj_remove_flag(avatar_mouth_happy, LV_OBJ_FLAG_HIDDEN);
-        }
         if (left_eye_highlight)
             lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_highlight)
             lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
+        if (avatar_mouth_happy) {
+            lv_obj_remove_flag(avatar_mouth_happy, LV_OBJ_FLAG_HIDDEN);
+        }
     } else if (emo_str == "kissy") {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
         current_anim_offset_h_right = 10 - EYE_BASE_H;  // 右眼瞇起來
