@@ -3994,6 +3994,29 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             global_accel_x = accel_x;
             global_accel_y = accel_y;
 
+            // =======================================================
+            // 🔄 智慧螢幕翻轉引擎 (StickS3 掛繩模式專用)
+            // =======================================================
+            static bool is_flipped = false;
+            // 設定重力閾值 (1G 約為 8192，設定 5000 代表傾斜超過約 40 度才觸發)
+            const int16_t FLIP_THRESHOLD = 5000;
+
+            // 當裝置倒轉 (掛在脖子上拿起來看) -> 【這裡改為大於正的閾值】
+            if (accel_y > FLIP_THRESHOLD && !is_flipped) {
+                is_flipped = true;
+                // 呼叫 LVGL 核心函數，直接硬體級翻轉畫面 180 度
+                lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_180);
+                ESP_LOGI("Display", "🔄 偵測到倒轉，畫面已翻轉 180 度");
+            }
+            // 當裝置正放 (拿在手上或插在底座) -> 【這裡改為小於負的閾值】
+            else if (accel_y < -FLIP_THRESHOLD && is_flipped) {
+                is_flipped = false;
+                // 恢復正常 0 度
+                lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_0);
+                ESP_LOGI("Display", "🔄 偵測到正放，畫面已恢復正常");
+            }
+            // =======================================================
+
             if (current_ui_mode == 0 && face_container != nullptr) {
                 int max_offset = 12;
 
