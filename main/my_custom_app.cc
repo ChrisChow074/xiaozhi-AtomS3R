@@ -666,16 +666,17 @@ static void update_clock_display() {
         lv_obj_set_style_bg_color(bg_time_mode, bg_color, 0);
 
         // 設定字體顏色 (白天黑字，晚上白字)
-        lv_color_t text_primary = is_daytime ? lv_color_black() : lv_color_white();
+        lv_color_t hr_primary = is_daytime ? avatar_theme_color : lv_color_white();
+        lv_color_t min_primary = is_daytime ? lv_color_hex(0x555555) : avatar_theme_color;
         // 日期顏色 (白天深藍色，晚上黃色，增添設計感)
-        lv_color_t text_accent = is_daytime ? lv_color_hex(0x555555) : lv_color_hex(0xCCCCCC);
+        lv_color_t text_accent = is_daytime ? lv_color_black() : lv_color_white();
         // 電量顏色 (平常為灰色)
-        lv_color_t text_gray = is_daytime ? lv_color_hex(0x555555) : lv_color_hex(0xCCCCCC);
+        lv_color_t text_gray = is_daytime ? lv_color_black() : lv_color_white();
 
         if (time_mode_hour_label)
-            lv_obj_set_style_text_color(time_mode_hour_label, avatar_theme_color, 0);
+            lv_obj_set_style_text_color(time_mode_hour_label, hr_primary, 0);
         if (time_mode_min_label)
-            lv_obj_set_style_text_color(time_mode_min_label, text_primary, 0);
+            lv_obj_set_style_text_color(time_mode_min_label, min_primary, 0);
         if (time_mode_date_label)
             lv_obj_set_style_text_color(time_mode_date_label, text_accent, 0);
         if (time_mode_battery_label)
@@ -691,6 +692,7 @@ static void update_clock_display() {
     strftime(min_str, sizeof(min_str), "%M", &timeinfo);
 
     strftime(date_str, sizeof(date_str), "%m-%d %a", &timeinfo);  // 例如 09-23 Wed
+    // strftime(date_str, sizeof(date_str), "%m-%d\n%A", &timeinfo);  // 例如 09-23 Wednesday
 
     if (time_mode_hour_label) {
         lv_label_set_text(time_mode_hour_label, hour_str);
@@ -4006,23 +4008,25 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 // 時
                 time_mode_hour_label = lv_label_create(bg_time_mode);
                 lv_obj_set_style_text_font(time_mode_hour_label, &micro5_120, 0);
-                lv_obj_align(time_mode_hour_label, LV_ALIGN_TOP_MID, 5, 30);
+                lv_obj_align(time_mode_hour_label, LV_ALIGN_TOP_MID, 3, 30);
+                lv_obj_set_style_text_align(time_mode_hour_label, LV_TEXT_ALIGN_CENTER, 0);
 
                 // 分
                 time_mode_min_label = lv_label_create(bg_time_mode);
                 lv_obj_set_style_text_font(time_mode_min_label, &micro5_120, 0);
-                lv_obj_align(time_mode_min_label, LV_ALIGN_TOP_MID, 5, 100);
+                lv_obj_align(time_mode_min_label, LV_ALIGN_TOP_MID, 3, 100);
+                lv_obj_set_style_text_align(time_mode_min_label, LV_TEXT_ALIGN_CENTER, 0);
 
                 // 日期與星期
                 time_mode_date_label = lv_label_create(bg_time_mode);
                 lv_obj_set_style_text_font(time_mode_date_label, &lv_font_montserrat_24, 0);
                 lv_obj_set_style_text_color(time_mode_date_label, lv_color_make(255, 200, 0), 0);
-                lv_obj_align(time_mode_date_label, LV_ALIGN_BOTTOM_LEFT, 10, -35);
+                lv_obj_align(time_mode_date_label, LV_ALIGN_BOTTOM_LEFT, 10, -40);
 
                 // 電量
                 time_mode_battery_label = lv_label_create(bg_time_mode);
                 lv_obj_set_style_text_font(time_mode_battery_label, &lv_font_montserrat_24, 0);
-                lv_obj_align(time_mode_battery_label, LV_ALIGN_BOTTOM_LEFT, 10, -10);
+                lv_obj_align(time_mode_battery_label, LV_ALIGN_BOTTOM_LEFT, 10, -15);
             }
             lv_obj_remove_flag(bg_time_mode, LV_OBJ_FLAG_HIDDEN);
 
@@ -4317,6 +4321,29 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             // ✨ 將重力數值交給全域變數
             global_accel_x = accel_x;
             global_accel_y = accel_y;
+
+            // =======================================================
+            // 🔄 智慧螢幕翻轉引擎 (StickS3 掛繩模式專用)
+            // =======================================================
+            static bool is_flipped = false;
+            // 設定重力閾值 (1G 約為 8192，設定 5000 代表傾斜超過約 40 度才觸發)
+            const int16_t FLIP_THRESHOLD = 5000;
+
+            // 當裝置倒轉 (掛在脖子上拿起來看) -> 【這裡改為大於正的閾值】
+            if (accel_y > FLIP_THRESHOLD && !is_flipped) {
+                is_flipped = true;
+                // 呼叫 LVGL 核心函數，直接硬體級翻轉畫面 180 度
+                lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_180);
+                ESP_LOGI("Display", "🔄 偵測到倒轉，畫面已翻轉 180 度");
+            }
+            // 當裝置正放 (拿在手上或插在底座) -> 【這裡改為小於負的閾值】
+            else if (accel_y < -FLIP_THRESHOLD && is_flipped) {
+                is_flipped = false;
+                // 恢復正常 0 度
+                lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_0);
+                ESP_LOGI("Display", "🔄 偵測到正放，畫面已恢復正常");
+            }
+            // =======================================================
 
             if (current_ui_mode == 0 && face_container != nullptr) {
                 int max_offset = 12;
@@ -5638,7 +5665,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // lv_obj_set_style_text_color(parent, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
     // avatar_theme_color = lv_color_make(100, 0, 255); // blue
-    avatar_theme_color = lv_color_make(255, 100, 0);  // orange
+    avatar_theme_color = lv_color_make(255, 120, 0);  // orange
 
     // ==============================================
     // 【新增】建立一個臉部總容器，用來做重力跟隨移動
