@@ -228,6 +228,7 @@ static lv_obj_t* avatar_sleepy_z = nullptr;
 static lv_obj_t* avatar_tears = nullptr;
 static lv_obj_t* avatar_swallow = nullptr;
 static lv_obj_t* avatar_confuse = nullptr;
+static lv_obj_t* avatar_talking_bubble = nullptr;
 
 static lv_color_t avatar_theme_color;
 static lv_color_t avatar_theme_bg_color;
