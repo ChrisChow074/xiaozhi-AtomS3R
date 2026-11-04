@@ -26,11 +26,13 @@
 // ==========================================
 // 天氣模式專屬變數
 // ==========================================
-LV_FONT_DECLARE(micro5_65);
+LV_FONT_DECLARE(micro5_75);
 
 // 1. 時間模式變數
 static lv_obj_t* bg_time_mode = nullptr;
-static lv_obj_t* time_mode_time_label = nullptr;
+// static lv_obj_t* time_mode_time_label = nullptr;
+static lv_obj_t* time_mode_hour_label = nullptr;  // 時 (大字)
+static lv_obj_t* time_mode_min_label = nullptr;   // 分 (大字)
 static lv_obj_t* time_mode_date_label = nullptr;
 
 // 2. 天氣模式變數
@@ -54,7 +56,7 @@ const int CLOCK_DIM_TIMEOUT_SEC = 5;  // 亮起後等待幾秒自動變暗 (可�
 #define EYE_POS_H -8
 #define EYE_CORNER 10  // (LV_RADIUS_CIRCLE)
 #define MOUTH_BASE_W 26
-#define MOUTH_BASE_H 8
+#define MOUTH_BASE_H 6
 #define MOUTH_POS_H 12
 
 #define BRIGHTNESS_DIM 5
@@ -756,29 +758,62 @@ static void update_clock_display() {
         lv_obj_set_style_bg_color(bg_time_mode, bg_color, 0);
 
         // 設定字體顏色 (白天黑字，晚上白字)
+        lv_color_t min_primary = is_daytime ? lv_color_hex(0x555555) : lv_color_white();
         lv_color_t text_primary = is_daytime ? lv_color_black() : lv_color_white();
         // 日期顏色 (白天深藍色，晚上黃色，增添設計感)
-        lv_color_t text_accent = is_daytime ? lv_color_hex(0x555555) : lv_color_hex(0xCCCCCC);
-        if (time_mode_time_label)
-            lv_obj_set_style_text_color(time_mode_time_label, text_primary, 0);
+        // lv_color_t text_accent = is_daytime ? lv_color_hex(0x555555) : lv_color_hex(0xCCCCCC);
+        if (time_mode_hour_label)
+            lv_obj_set_style_text_color(time_mode_hour_label, avatar_theme_color, 0);
+        if (time_mode_min_label)
+            lv_obj_set_style_text_color(time_mode_min_label, min_primary, 0);
+        // if (time_mode_time_label) lv_obj_set_style_text_color(time_mode_time_label, text_primary,
+        // 0);
         if (time_mode_date_label)
-            lv_obj_set_style_text_color(time_mode_date_label, text_accent, 0);
+            lv_obj_set_style_text_color(time_mode_date_label, text_primary, 0);
     }
 
-    char time_str[16];
+    char hour_str[4];
+    char min_str[4];
     char date_str[32];
-    // strftime(time_str, sizeof(time_str), "%H:%M", &timeinfo); //24小時制
-    // strftime(time_str, sizeof(time_str), "%I:%M%P", &timeinfo);    // 12小時制有AM/PM
+    /*
+    strftime(time_str, sizeof(time_str), "%H:%M", &timeinfo); //24小時制
     strftime(time_str, sizeof(time_str), "%I:%M", &timeinfo);      // 12小時制有AM/PM
-    strftime(date_str, sizeof(date_str), "%m-%d\n%A", &timeinfo);  // 例如 09-23 Wed
     int len = strlen(time_str);
     if (len > 0 && (time_str[len - 1] == 'm' || time_str[len - 1] == 'M')) {
         time_str[len - 1] = '\0';  // 將 'm' 替換 fluid 為字串結束符
+    }*/
+    strftime(date_str, sizeof(date_str), "%m-%d\n%A", &timeinfo);  // 例如 09-23 Wed
+
+    strftime(hour_str, sizeof(hour_str), "%I", &timeinfo);
+    strftime(min_str, sizeof(min_str), "%M", &timeinfo);
+
+    if (time_mode_hour_label) {
+        lv_label_set_text(time_mode_hour_label, hour_str);
+    }
+    if (time_mode_min_label) {
+        lv_label_set_text(time_mode_min_label, min_str);
+
+        // ==========================================
+        // 🌟 動態排版：針對數字 '1' 進行左移 (字距微調)
+        // ==========================================
+        int base_x = 68;       // 你原本設定的基準 X 座標
+        int shift_pixels = 6;  // 【你可以調教這裡】每多一個 '1' 要往左退幾格像素
+
+        // 檢查小時的十位數是不是 '1' (例如: 10, 11, 12)
+        if (hour_str[0] == '1') {
+            base_x = base_x - shift_pixels;
+        }
+        // 檢查小時的個位數是不是 '1' (例如: 01, 11)
+        if (hour_str[1] == '1') {
+            base_x = base_x - shift_pixels;
+        }
+
+        // 重新把新的 X 座標套用到分鐘標籤上
+        lv_obj_align(time_mode_min_label, LV_ALIGN_LEFT_MID, base_x, -24);
+        // ==========================================
     }
 
-    if (time_mode_time_label) {
-        lv_label_set_text(time_mode_time_label, time_str);
-    }
+    // if (time_mode_time_label) {lv_label_set_text(time_mode_time_label, time_str);}
     if (time_mode_date_label) {
         lv_label_set_text(time_mode_date_label, date_str);
     }
@@ -2904,7 +2939,9 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         if (current_ui_mode != 3 && bg_time_mode) {
             lv_obj_del(bg_time_mode);
             bg_time_mode = nullptr;
-            time_mode_time_label = nullptr;
+            time_mode_hour_label = nullptr;
+            time_mode_min_label = nullptr;
+            // time_mode_time_label = nullptr;
             time_mode_date_label = nullptr;
         }
         if (current_ui_mode != 6 && bg_weather_mode) {
@@ -3645,9 +3682,20 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 lv_obj_set_style_radius(bg_time_mode, 0, 0);
 
                 // 時間
+                /*
                 time_mode_time_label = lv_label_create(bg_time_mode);
                 lv_obj_set_style_text_font(time_mode_time_label, &micro5_65, 0);
                 lv_obj_align(time_mode_time_label, LV_ALIGN_LEFT_MID, 9, -22);  // 靠左 10，向下 10
+                */
+                // 時
+                time_mode_hour_label = lv_label_create(bg_time_mode);
+                lv_obj_set_style_text_font(time_mode_hour_label, &micro5_75, 0);
+                lv_obj_align(time_mode_hour_label, LV_ALIGN_LEFT_MID, 10, -24);
+
+                // 分
+                time_mode_min_label = lv_label_create(bg_time_mode);
+                lv_obj_set_style_text_font(time_mode_min_label, &micro5_75, 0);
+                lv_obj_align(time_mode_min_label, LV_ALIGN_LEFT_MID, 68, -24);
 
                 // 日期與星期 (右上角)
                 time_mode_date_label = lv_label_create(bg_time_mode);
@@ -5018,35 +5066,44 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             if (idle_anim_timer > 0) {
                 idle_anim_timer--;
                 if (idle_anim_timer == 0) {
-                    if (idle_anim_state == 0) {
-                        // 決定下一個動作：隨機 2~3 次「四處看」後，來 1 次「打呵欠」
-                        if (idle_look_count < (2 + esp_random() % 2)) {
-                            // [動作] 四處看 (此時眨眼動畫依然自然運行！)
-                            current_look_pattern = esp_random() % 6;
-                            trigger_idle_look();
-                            idle_anim_state = 1;
-                            idle_anim_timer = 15;  // 四處看動畫耗時 1.5 秒 (15*100ms)
-                            idle_look_count++;
-                        } else {
-                            // [動作] 打呵欠
-                            lv_anim_del(avatar_left_eye,
-                                        anim_blink_cb);  // 暫停普通眨眼，專心打呵欠
-                            lv_anim_del(avatar_right_eye, anim_blink_cb);
-                            start_eye_snore_animation();
-                            start_mouth_animation();
-                            idle_anim_state = 2;
-                            idle_anim_timer = 30;  // 打呵欠動畫耗時 3.0 秒
-                            idle_look_count = 0;
+                    // 🛡️ 防呆保護：只有在「普通待機 (neutral)」時才允許四處看，
+                    // 防止與觸摸產生的生氣/開心等動畫打架導致當機！
+                    if (current_active_emotion == "neutral") {
+                        if (idle_anim_state == 0) {
+                            // 決定下一個動作：隨機 2~3 次「四處看」後，來 1 次「打呵欠」
+                            if (idle_look_count < (2 + esp_random() % 2)) {
+                                // [動作] 四處看 (此時眨眼動畫依然自然運行！)
+                                current_look_pattern = esp_random() % 6;
+                                trigger_idle_look();
+                                idle_anim_state = 1;
+                                idle_anim_timer = 15;  // 四處看動畫耗時 1.5 秒 (15*100ms)
+                                idle_look_count++;
+                            } else {
+                                // [動作] 打呵欠
+                                lv_anim_del(avatar_left_eye,
+                                            anim_blink_cb);  // 暫停普通眨眼，專心打呵欠
+                                lv_anim_del(avatar_right_eye, anim_blink_cb);
+                                start_eye_snore_animation();
+                                start_mouth_animation();
+                                idle_anim_state = 2;
+                                idle_anim_timer = 30;  // 打呵欠動畫耗時 3.0 秒
+                                idle_look_count = 0;
+                            }
+                        } else if (idle_anim_state == 1) {
+                            // 四處看結束，回到待機
+                            idle_anim_state = 0;
+                            idle_anim_timer =
+                                20 + esp_random() % 30;  // 隨機等待 2~5 秒後做下一個動作
+                        } else if (idle_anim_state == 2) {
+                            // 打呵欠結束，恢復眨眼，回到待機
+                            start_blink_animation();
+                            idle_anim_state = 0;
+                            idle_anim_timer =
+                                30 + esp_random() % 40;  // 隨機等待 3~7 秒後做下一個動作
                         }
-                    } else if (idle_anim_state == 1) {
-                        // 四處看結束，回到待機
-                        idle_anim_state = 0;
-                        idle_anim_timer = 20 + esp_random() % 30;  // 隨機等待 2~5 秒後做下一個動作
-                    } else if (idle_anim_state == 2) {
-                        // 打呵欠結束，恢復眨眼，回到待機
-                        start_blink_animation();
-                        idle_anim_state = 0;
-                        idle_anim_timer = 30 + esp_random() % 40;  // 隨機等待 3~7 秒後做下一個動作
+                    } else {
+                        // 如果有其他表情正在播放，延遲 1 秒後再檢查一次，不要強行啟動四處看
+                        idle_anim_timer = 10;
                     }
                 }
             }
@@ -5128,6 +5185,26 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
         clock_is_bright = true;
         clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
+
+        // 🧹 徹底刪除所有配件的殭屍動畫，防止背景繼續執行耗盡資源
+        if (avatar_anger)
+            lv_anim_del(avatar_anger, NULL);
+        if (avatar_heart)
+            lv_anim_del(avatar_heart, NULL);
+        if (avatar_tears)
+            lv_anim_del(avatar_tears, NULL);
+        if (avatar_swallow)
+            lv_anim_del(avatar_swallow, NULL);
+        if (avatar_surprised_eye)
+            lv_anim_del(avatar_surprised_eye, NULL);
+        if (avatar_mouth_laugh)
+            lv_anim_del(avatar_mouth_laugh, NULL);
+        if (avatar_left_eye)
+            lv_anim_del(avatar_left_eye, NULL);
+        if (avatar_right_eye)
+            lv_anim_del(avatar_right_eye, NULL);
+        if (avatar_mouth)
+            lv_anim_del(avatar_mouth, NULL);
 
         current_active_emotion = "neutral";  // 重置回普通待機
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
@@ -5255,6 +5332,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     lv_obj_set_size(avatar_mouth, MOUTH_BASE_W, MOUTH_BASE_H);
     lv_obj_set_style_radius(avatar_mouth, 8, 0);
     lv_obj_set_style_bg_color(avatar_mouth, avatar_theme_color, 0);
+    lv_obj_set_style_border_width(avatar_mouth, 0, 0);
     lv_obj_clear_flag(avatar_mouth, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
 
@@ -5923,6 +6001,13 @@ static void reset_avatar_geometry() {
     }
 }
 
+// ==========================================
+// 安全的 Y 軸平移推動器 (防止 LVGL 佈局引擎無限迴圈)
+// ==========================================
+static void anim_translate_y_cb(void* var, int32_t v) {
+    lv_obj_set_style_translate_y((lv_obj_t*)var, v, 0);
+}
+
 // --- 鉤子 2：設置特殊表情 ---
 void CustomApp_SetEmotion(const char* emotion) {
     if (emotion == nullptr)
@@ -6017,10 +6102,8 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_t a;
             lv_anim_init(&a);
             lv_anim_set_var(&a, avatar_heart);
-            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
-            lv_anim_set_values(
-                &a, EYE_POS_H - EYE_BASE_H + 6,
-                EYE_POS_H - EYE_BASE_H);  // 上下移動位置，第一個是原本位置，第二是移動位置
+            lv_anim_set_exec_cb(&a, anim_translate_y_cb);
+            lv_anim_set_values(&a, 0, -6);
             lv_anim_set_duration(&a, 600);
             lv_anim_set_playback_time(&a, 600);
             lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
@@ -6062,7 +6145,7 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_t a;
             lv_anim_init(&a);
             lv_anim_set_var(&a, avatar_tears);
-            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
+            lv_anim_set_exec_cb(&a, anim_translate_y_cb);
             // 讓眼淚容器從原本位置 (0) 往下掉 (15px)，製造眼淚落下的流動感
             lv_anim_set_values(&a, 0, 15);
             lv_anim_set_time(&a, 300);  // 掉落速度快 (300ms)
@@ -6093,7 +6176,7 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_t a;
             lv_anim_init(&a);
             lv_anim_set_var(&a, avatar_swallow);
-            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
+            lv_anim_set_exec_cb(&a, anim_translate_y_cb);
             // 讓眼淚容器從原本位置 (0) 往下掉 (10px)，製造眼淚落下的流動感
             lv_anim_set_values(&a, 0, 10);
             lv_anim_set_time(&a, 300);  // 掉落速度快 (300ms)
@@ -6133,9 +6216,8 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_t a;
             lv_anim_init(&a);
             lv_anim_set_var(&a, avatar_anger);
-            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
-            lv_anim_set_values(&a, EYE_POS_H - EYE_BASE_H,
-                               EYE_POS_H - EYE_BASE_H - 4);  // 上下震顫跳動 4px
+            lv_anim_set_exec_cb(&a, anim_translate_y_cb);
+            lv_anim_set_values(&a, 0, -4);
             lv_anim_set_duration(&a, 150);
             lv_anim_set_playback_time(&a, 150);
             lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
@@ -6188,9 +6270,8 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_t a;
             lv_anim_init(&a);
             lv_anim_set_var(&a, avatar_surprised_eye);
-            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
-            lv_anim_set_values(&a, EYE_POS_H - EYE_BASE_H + 4,
-                               EYE_POS_H - EYE_BASE_H - 2);  // 向上6px
+            lv_anim_set_exec_cb(&a, anim_translate_y_cb);
+            lv_anim_set_values(&a, 0, -6);
             lv_anim_set_duration(&a, 400);
             lv_anim_set_repeat_count(&a, 1);
             lv_anim_start(&a);
@@ -6241,8 +6322,8 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_t a;
             lv_anim_init(&a);
             lv_anim_set_var(&a, avatar_mouth_laugh);
-            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
-            lv_anim_set_values(&a, 24, 20);  // 上下震顫跳動 4px
+            lv_anim_set_exec_cb(&a, anim_translate_y_cb);
+            lv_anim_set_values(&a, 0, -4);
             lv_anim_set_duration(&a, 150);
             lv_anim_set_playback_time(&a, 150);
             lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
@@ -6329,8 +6410,8 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_t a;
             lv_anim_init(&a);
             lv_anim_set_var(&a, avatar_swallow);
-            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
-            // 讓眼淚容器從原本位置 (0) 往下掉 (15px)，製造眼淚落下的流動感
+            lv_anim_set_exec_cb(&a, anim_translate_y_cb);
+            // 讓眼淚容器從原本位置 (0) 往下掉 (10px)，製造眼淚落下的流動感
             lv_anim_set_values(&a, 0, 10);
             lv_anim_set_time(&a, 1200);  // 掉落速度快 (300ms)
             // 不設 playback (不來回反彈)，直接無限重複掉落！
