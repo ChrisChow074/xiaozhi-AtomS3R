@@ -758,12 +758,13 @@ static void update_clock_display() {
         lv_obj_set_style_bg_color(bg_time_mode, bg_color, 0);
 
         // 設定字體顏色 (白天黑字，晚上白字)
-        lv_color_t min_primary = is_daytime ? lv_color_hex(0x555555) : lv_color_white();
+        lv_color_t hr_primary = is_daytime ? avatar_theme_color : lv_color_white();
+        lv_color_t min_primary = is_daytime ? lv_color_hex(0x555555) : avatar_theme_color;
         lv_color_t text_primary = is_daytime ? lv_color_black() : lv_color_white();
         // 日期顏色 (白天深藍色，晚上黃色，增添設計感)
         // lv_color_t text_accent = is_daytime ? lv_color_hex(0x555555) : lv_color_hex(0xCCCCCC);
         if (time_mode_hour_label)
-            lv_obj_set_style_text_color(time_mode_hour_label, avatar_theme_color, 0);
+            lv_obj_set_style_text_color(time_mode_hour_label, hr_primary, 0);
         if (time_mode_min_label)
             lv_obj_set_style_text_color(time_mode_min_label, min_primary, 0);
         // if (time_mode_time_label) lv_obj_set_style_text_color(time_mode_time_label, text_primary,
