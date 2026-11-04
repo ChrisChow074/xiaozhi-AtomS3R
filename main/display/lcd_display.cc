@@ -80,7 +80,16 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
 
     // Load theme from settings
     Settings settings("display", false);
+
+    /* buddy edit
     std::string theme_name = settings.GetString("theme", "light");
+    */
+
+    // buddy edit: 強制將主題設為 dark，並覆寫掉舊的記憶存檔
+    std::string theme_name = "light";
+    settings.SetString("theme", theme_name);
+    // ----------------------------------
+
     current_theme_ = LvglThemeManager::GetInstance().GetTheme(theme_name);
 
     // Create a timer to hide the preview image
