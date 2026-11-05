@@ -228,7 +228,6 @@ static lv_obj_t* avatar_sleepy_z = nullptr;
 static lv_obj_t* avatar_tears = nullptr;
 static lv_obj_t* avatar_swallow = nullptr;
 static lv_obj_t* avatar_confuse = nullptr;
-static lv_obj_t* avatar_talking_bubble = nullptr;
 
 static lv_color_t avatar_theme_color;
 static lv_color_t avatar_theme_bg_color;
@@ -2384,11 +2383,32 @@ static void anim_look_cb(void* var, int32_t v) {
              (patterns[p].p2y * LOOK_MOUTH_MAX_Y * progress) / 100;
     }
 
-    // 將偏移量即時套用到眼睛 (不會破壞重力傾斜，因為它是相對於臉部容器)
-    lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L + tx, EYE_POS_H + ty);
-    lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R + tx, EYE_POS_H + ty);
-    // 套用嘴巴偏移 (因為嘴巴原始 X 座標準位是 0，Y 是 MOUTH_POS_H)
-    lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0 + mx, MOUTH_POS_H + my);
+    // ==========================================
+    // 🚀 【核心修復】使用 translate 平移，不破壞原本的動畫與座標
+    // ==========================================
+
+    // 1. 眼睛與所有上半部裝飾 (使用 tx, ty)
+    // 這樣一來，不論是眼淚、汗水、愛心還是青筋，都會完美跟著眼睛移動！
+    lv_obj_t* eye_parts[] = {
+        avatar_left_eye, avatar_right_eye, avatar_sad_eye,  avatar_surprised_eye, avatar_angry_eye,
+        avatar_cool,     avatar_confuse,   avatar_tears,    avatar_sweat,         avatar_embrassing,
+        avatar_anger,    avatar_heart,     avatar_sleepy_z, avatar_swallow};
+    for (int i = 0; i < sizeof(eye_parts) / sizeof(eye_parts[0]); i++) {
+        if (eye_parts[i]) {
+            lv_obj_set_style_translate_x(eye_parts[i], tx, 0);
+            lv_obj_set_style_translate_y(eye_parts[i], ty, 0);
+        }
+    }
+
+    // 2. 所有嘴巴形態 (使用 mx, my，產生 3D 視差)
+    lv_obj_t* mouth_parts[] = {avatar_mouth, avatar_mouth_happy, avatar_mouth_laugh,
+                               avatar_silly_tongue, avatar_kissy};
+    for (int i = 0; i < sizeof(mouth_parts) / sizeof(mouth_parts[0]); i++) {
+        if (mouth_parts[i]) {
+            lv_obj_set_style_translate_x(mouth_parts[i], mx, 0);
+            lv_obj_set_style_translate_y(mouth_parts[i], my, 0);
+        }
+    }
 }
 
 static void trigger_idle_look() {
@@ -4520,6 +4540,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
     // 安全地在 LVGL 執行緒裡處理遊戲動作 (方向 1~4，按鍵動作 5)
     if ((current_ui_mode == 2 || current_ui_mode == 5) && pending_game_action != 0) {
+        idle_to_clock_counter = 0;  // 👈 只要有操作，重置閒置計時器
         if (pending_game_action == 1)
             move_2048_left();
         else if (pending_game_action == 2)
@@ -5413,6 +5434,49 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             lv_obj_align(bk_ball, LV_ALIGN_TOP_LEFT, bk_ball_x, bk_ball_y);
     }
 
+    // =======================================================
+    // 🌟 第一步：全域閒置超時機制 (任何模式下皆生效)
+    // =======================================================
+    {
+        DeviceState sys_state = Application::GetInstance().GetDeviceState();
+
+        // 只要不是正在講話或聆聽，且不在時鐘模式，就累加計時器
+        if (sys_state == kDeviceStateIdle && current_ui_mode != 3) {
+            idle_to_clock_counter++;
+
+            // 塔羅模式(15分鐘=9000)，其他模式(3分鐘=1800)
+            int timeout_limit = is_tarot_mode ? 9000 : 1800;
+
+            // 【防呆保護】：如果計時器或碼表正在運行中，絕對不能強制退出！
+            if (current_ui_mode == 5) {
+                if (app_menu_selection == APP_TIMER &&
+                    (timer_state == TIMER_RUNNING || timer_state == TIMER_ALARM)) {
+                    idle_to_clock_counter = 0;  // 計時器運作中，重置
+                }
+                if (app_menu_selection == APP_STOPWATCH && sw_state == SW_RUNNING) {
+                    idle_to_clock_counter = 0;  // 碼表運作中，重置
+                }
+            }
+
+            if (idle_to_clock_counter >= timeout_limit) {
+                idle_to_clock_counter = 0;
+                is_tarot_mode = false;
+                ESP_LOGI("System", "⏳ 全域閒置超時，自動退出目前畫面，進入時間模式");
+
+                // 強制切換到時間模式 (會觸發上方的記憶體清理機制)
+                current_system_mode = 3;
+                current_ui_mode = 3;
+                ui_mode_changed = true;
+
+                auto backlight = Board::GetInstance().GetBacklight();
+                if (backlight)
+                    backlight->SetBrightness(100);
+            }
+        } else if (sys_state != kDeviceStateIdle) {
+            idle_to_clock_counter = 0;  // AI 忙碌中，重置計時器
+        }
+    }
+
     if (current_ui_mode != 0)
         return;  // 如果在遊戲模式，不更新臉部表情
 
@@ -5454,6 +5518,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     DeviceState current_state = Application::GetInstance().GetDeviceState();
     auto backlight = Board::GetInstance().GetBacklight();
 
+    /*
     // 1. 自動進入時間模式，閒置計時器：只要處於待機 (Idle)，每次 tick (100ms) 都要累加
     if (current_state == kDeviceStateIdle) {
         idle_to_clock_counter++;
@@ -5483,6 +5548,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         // 如果不是 Idle (正在講話或聆聽)，將閒置計時歸零
         idle_to_clock_counter = 0;
     }
+    */
 
     // 2. 只有狀態發生「變化」時，才重新建立/切換表情動畫
     if (current_state == last_avatar_state) {
@@ -6373,6 +6439,13 @@ static void reset_avatar_geometry() {
     }
 }
 
+// ==========================================
+// 安全的 Y 軸平移推動器 (防止 LVGL 佈局引擎無限迴圈)
+// ==========================================
+static void anim_translate_y_cb(void* var, int32_t v) {
+    lv_obj_set_style_translate_y((lv_obj_t*)var, v, 0);
+}
+
 // --- 鉤子 2：設置特殊表情 ---
 void CustomApp_SetEmotion(const char* emotion) {
     if (emotion == nullptr)
@@ -6467,10 +6540,8 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_t a;
             lv_anim_init(&a);
             lv_anim_set_var(&a, avatar_heart);
-            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
-            lv_anim_set_values(
-                &a, EYE_POS_H - EYE_BASE_H + 6,
-                EYE_POS_H - EYE_BASE_H);  // 上下移動位置，第一個是原本位置，第二是移動位置
+            lv_anim_set_exec_cb(&a, anim_translate_y_cb);
+            lv_anim_set_values(&a, 0, -6);
             lv_anim_set_duration(&a, 600);
             lv_anim_set_playback_time(&a, 600);
             lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
@@ -6512,7 +6583,7 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_t a;
             lv_anim_init(&a);
             lv_anim_set_var(&a, avatar_tears);
-            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
+            lv_anim_set_exec_cb(&a, anim_translate_y_cb);
             // 讓眼淚容器從原本位置 (0) 往下掉 (15px)，製造眼淚落下的流動感
             lv_anim_set_values(&a, 0, 15);
             lv_anim_set_time(&a, 300);  // 掉落速度快 (300ms)
@@ -6543,7 +6614,7 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_t a;
             lv_anim_init(&a);
             lv_anim_set_var(&a, avatar_swallow);
-            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
+            lv_anim_set_exec_cb(&a, anim_translate_y_cb);
             // 讓眼淚容器從原本位置 (0) 往下掉 (10px)，製造眼淚落下的流動感
             lv_anim_set_values(&a, 0, 10);
             lv_anim_set_time(&a, 300);  // 掉落速度快 (300ms)
@@ -6580,9 +6651,8 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_t a;
             lv_anim_init(&a);
             lv_anim_set_var(&a, avatar_anger);
-            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
-            lv_anim_set_values(&a, EYE_POS_H - EYE_BASE_H,
-                               EYE_POS_H - EYE_BASE_H - 4);  // 上下震顫跳動 4px
+            lv_anim_set_exec_cb(&a, anim_translate_y_cb);
+            lv_anim_set_values(&a, 0, -4);
             lv_anim_set_duration(&a, 150);
             lv_anim_set_playback_time(&a, 150);
             lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
@@ -6635,9 +6705,8 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_t a;
             lv_anim_init(&a);
             lv_anim_set_var(&a, avatar_surprised_eye);
-            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
-            lv_anim_set_values(&a, EYE_POS_H - EYE_BASE_H + 4,
-                               EYE_POS_H - EYE_BASE_H - 2);  // 向上6px
+            lv_anim_set_exec_cb(&a, anim_translate_y_cb);
+            lv_anim_set_values(&a, 0, -6);
             lv_anim_set_duration(&a, 400);
             lv_anim_set_repeat_count(&a, 1);
             lv_anim_start(&a);
@@ -6695,8 +6764,8 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_t a;
             lv_anim_init(&a);
             lv_anim_set_var(&a, avatar_mouth_laugh);
-            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
-            lv_anim_set_values(&a, 24, 20);  // 上下震顫跳動 4px
+            lv_anim_set_exec_cb(&a, anim_translate_y_cb);
+            lv_anim_set_values(&a, 0, -4);
             lv_anim_set_duration(&a, 150);
             lv_anim_set_playback_time(&a, 150);
             lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
@@ -6782,7 +6851,7 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_t a;
             lv_anim_init(&a);
             lv_anim_set_var(&a, avatar_swallow);
-            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
+            lv_anim_set_exec_cb(&a, anim_translate_y_cb);
             // 讓眼淚容器從原本位置 (0) 往下掉 (15px)，製造眼淚落下的流動感
             lv_anim_set_values(&a, 0, 10);
             lv_anim_set_time(&a, 1200);  // 掉落速度快 (300ms)
