@@ -3966,13 +3966,15 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             update_clock_display();
         }
 
-        return;  // 時鐘模式結束，不執行下面的遊戲與臉部邏輯
+        // return;  // 時鐘模式結束，不執行下面的遊戲與臉部邏輯
     }
 
     // ==============================================
     // 【體感控制核心】BMI270 讀取與雙遊戲方向分流
     // ==============================================
-    if ((current_ui_mode == 0 || current_ui_mode == 2 || current_ui_mode == 5) && imu_initialized) {
+    if ((current_ui_mode == 0 || current_ui_mode == 2 || current_ui_mode == 3 ||
+         current_ui_mode == 5 || current_ui_mode == 6) &&
+        imu_initialized) {
         static bool tilt_locked_2048 = false;
         uint8_t reg = BMI270_REG_DATA_X_LSB;
         uint8_t data[6] = {0};
@@ -3995,25 +3997,22 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             global_accel_y = accel_y;
 
             // =======================================================
-            // 🔄 智慧螢幕翻轉引擎 (StickS3 掛繩模式專用)
+            // 🔄 智慧螢幕翻轉引擎
             // =======================================================
-            static bool is_flipped = false;
-            // 設定重力閾值 (1G 約為 8192，設定 5000 代表傾斜超過約 40 度才觸發)
-            const int16_t FLIP_THRESHOLD = 5000;
+            // 🌟 2. 限制只在 AI(0)、時間(3)、天氣(6) 模式下才允許翻轉，防止遊戲(2)/APP(5)中誤觸
+            if (current_ui_mode == 0 || current_ui_mode == 3 || current_ui_mode == 6) {
+                static bool is_flipped = false;
+                const int16_t FLIP_THRESHOLD = 5000;
 
-            // 當裝置倒轉 (掛在脖子上拿起來看) -> 【這裡改為大於正的閾值】
-            if (accel_y > FLIP_THRESHOLD && !is_flipped) {
-                is_flipped = true;
-                // 呼叫 LVGL 核心函數，直接硬體級翻轉畫面 180 度
-                lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_180);
-                ESP_LOGI("Display", "🔄 偵測到倒轉，畫面已翻轉 180 度");
-            }
-            // 當裝置正放 (拿在手上或插在底座) -> 【這裡改為小於負的閾值】
-            else if (accel_y < -FLIP_THRESHOLD && is_flipped) {
-                is_flipped = false;
-                // 恢復正常 0 度
-                lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_0);
-                ESP_LOGI("Display", "🔄 偵測到正放，畫面已恢復正常");
+                if (accel_y > FLIP_THRESHOLD && !is_flipped) {
+                    is_flipped = true;
+                    lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_180);
+                    ESP_LOGI("Display", "🔄 偵測到倒轉，畫面已翻轉 180 度");
+                } else if (accel_y < -FLIP_THRESHOLD && is_flipped) {
+                    is_flipped = false;
+                    lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_0);
+                    ESP_LOGI("Display", "🔄 偵測到正放，畫面已恢復正常");
+                }
             }
             // =======================================================
 
@@ -4197,6 +4196,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
     // 安全地在 LVGL 執行緒裡處理遊戲動作 (方向 1~4，按鍵動作 5)
     if ((current_ui_mode == 2 || current_ui_mode == 5) && pending_game_action != 0) {
+        idle_to_clock_counter = 0;  // 👈 只要有操作，重置閒置計時器
         if (pending_game_action == 1)
             move_2048_left();
         else if (pending_game_action == 2)
@@ -5013,6 +5013,49 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             lv_obj_align(bk_ball, LV_ALIGN_TOP_LEFT, bk_ball_x, bk_ball_y);
     }
 
+    // =======================================================
+    // 🌟 第一步：全域閒置超時機制 (任何模式下皆生效)
+    // =======================================================
+    {
+        DeviceState sys_state = Application::GetInstance().GetDeviceState();
+
+        // 只要不是正在講話或聆聽，且不在時鐘模式，就累加計時器
+        if (sys_state == kDeviceStateIdle && current_ui_mode != 3) {
+            idle_to_clock_counter++;
+
+            // 塔羅模式(15分鐘=9000)，其他模式(3分鐘=1800)
+            int timeout_limit = is_tarot_mode ? 9000 : 1800;
+
+            // 【防呆保護】：如果計時器或碼表正在運行中，絕對不能強制退出！
+            if (current_ui_mode == 5) {
+                if (app_menu_selection == APP_TIMER &&
+                    (timer_state == TIMER_RUNNING || timer_state == TIMER_ALARM)) {
+                    idle_to_clock_counter = 0;  // 計時器運作中，重置
+                }
+                if (app_menu_selection == APP_STOPWATCH && sw_state == SW_RUNNING) {
+                    idle_to_clock_counter = 0;  // 碼表運作中，重置
+                }
+            }
+
+            if (idle_to_clock_counter >= timeout_limit) {
+                idle_to_clock_counter = 0;
+                is_tarot_mode = false;
+                ESP_LOGI("System", "⏳ 全域閒置超時，自動退出目前畫面，進入時間模式");
+
+                // 強制切換到時間模式 (會觸發上方的記憶體清理機制)
+                current_system_mode = 3;
+                current_ui_mode = 3;
+                ui_mode_changed = true;
+
+                auto backlight = Board::GetInstance().GetBacklight();
+                if (backlight)
+                    backlight->SetBrightness(100);
+            }
+        } else if (sys_state != kDeviceStateIdle) {
+            idle_to_clock_counter = 0;  // AI 忙碌中，重置計時器
+        }
+    }
+
     if (current_ui_mode != 0)
         return;  // 如果在遊戲模式，不更新臉部表情
 
@@ -5022,10 +5065,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     if (pending_touch_wake > 0) {
         if (pending_touch_wake == 15) {
             // 剛摸到的瞬間：隨機選取 6 種表情之一
-            const char* random_emotions[] = {"angry",
-                                             "thinking"
-                                             "sleepy",
-                                             "confused"};
+            const char* random_emotions[] = {"thinking", "sleepy", "confused"};
             int total_emotions = sizeof(random_emotions) / sizeof(random_emotions[0]);
             int rand_idx = esp_random() % total_emotions;
             CustomApp_SetEmotion(random_emotions[rand_idx]);
@@ -5051,6 +5091,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     DeviceState current_state = Application::GetInstance().GetDeviceState();
     auto backlight = Board::GetInstance().GetBacklight();
 
+    /*
     // 1. 自動進入時間模式，閒置計時器：只要處於待機 (Idle)，每次 tick (100ms) 都要累加
     if (current_state == kDeviceStateIdle) {
         idle_to_clock_counter++;
@@ -5080,6 +5121,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         // 如果不是 Idle (正在講話或聆聽)，將閒置計時歸零
         idle_to_clock_counter = 0;
     }
+    */
 
     // 2. 只有狀態發生「變化」時，才重新建立/切換表情動畫
     if (current_state == last_avatar_state) {
@@ -6225,13 +6267,17 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_remove_flag(avatar_sweat, LV_OBJ_FLAG_HIDDEN);
         }
     } else if (emo_str == "angry") {
-        // 憤怒表情：瞇眼、嘴角緊抿
+        // 憤怒表情
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
-        lv_obj_set_size(avatar_mouth, 26, 32);
+        // lv_obj_set_size(avatar_mouth, 26, 32);
+        lv_obj_set_size(avatar_mouth, 38, 6);
+
+        /*
         if (left_eye_highlight)
             lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_highlight)
             lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        */
 
         // 彈出 💢 青筋符號並加上微幅震顫/跳動動畫！
         if (avatar_anger) {
