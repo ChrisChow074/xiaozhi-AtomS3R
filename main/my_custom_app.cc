@@ -2457,8 +2457,15 @@ static void start_mouth_animation() {
 void CustomApp_OnChatMessage(const char* role, const char* content) {
     // 全域靜音攔截器 (讓 AI 在遊戲中徹底閉嘴)
     if (strcmp(role, "assistant") == 0) {
+        // 👇👇👇 [新增] 尋找設備的「免死金牌」：只要內容包含關鍵字，絕對不攔截！
+        if (content != nullptr &&
+            (strstr(content, "响度") != nullptr || strstr(content, "喺度") != nullptr)) {
+            return;  // 提早結束這個 if，讓文字順利傳給底層播放
+        }
+        // 👆👆👆 ========================================================
+
         // 如果處於遊戲選單 (1) 或 遊戲中 (2)，強制截斷 AI 的語音輸出
-        if (current_system_mode != 0) {
+        if (current_system_mode != 0) {  // (AtomS3R 可能是 == 1 || == 2)
             Application::GetInstance().Schedule(
                 []() { Application::GetInstance().AbortSpeaking(kAbortReasonNone); });
             return;  // 直接返回，完全不處理 AI 的文字
