@@ -15,9 +15,11 @@
 #define CONFIG_TOUCH_SUPPRESS_DEPRECATE_WARN 1
 #include "driver/touch_pad.h"
 #include "esp_http_client.h"
+#include "esp_mac.h"
 #include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "mqtt_client.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -2255,8 +2257,12 @@ static void start_mouth_animation() {
 void CustomApp_OnChatMessage(const char* role, const char* content) {
     // 全域靜音攔截器 (讓 AI 在遊戲中徹底閉嘴)
     if (strcmp(role, "assistant") == 0) {
+        // 👇👇👇 [新增] 尋找設備的「免死金牌」：只要內容包含關鍵字，絕對不攔截！
+        if (content != nullptr && strstr(content, "[FIND_ME]") != nullptr) {
+            return;
+        }
         // 如果處於遊戲選單 (1) 或 遊戲中 (2)，強制截斷 AI 的語音輸出
-        if (current_system_mode == 1 || current_system_mode == 2) {
+        if (current_system_mode != 0) {  // (AtomS3R 可能是 == 1 || == 2)
             Application::GetInstance().Schedule(
                 []() { Application::GetInstance().AbortSpeaking(kAbortReasonNone); });
             return;  // 直接返回，完全不處理 AI 的文字
@@ -5328,6 +5334,69 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     }
 }
 
+// ==========================================
+// MQTT 尋找設備背景監聽任務
+// ==========================================
+static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_t event_id,
+                               void* event_data) {
+    esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
+
+    if (event_id == MQTT_EVENT_CONNECTED) {
+        char* topic = (char*)handler_args;
+        esp_mqtt_client_subscribe(event->client, topic, 0);
+        ESP_LOGI("MQTT", "✅ 成功連線 Mosquitto，已訂閱主題: %s", topic);
+    } else if (event_id == MQTT_EVENT_DATA) {
+        ESP_LOGI("MQTT", "🚨 收到 MQTT 尋找設備喚醒指令！");
+
+        Application::GetInstance().Schedule([]() {
+            auto backlight = Board::GetInstance().GetBacklight();
+            if (backlight)
+                backlight->SetBrightness(100);
+            current_system_mode = 0;
+            current_ui_mode = 0;
+            ui_mode_changed = true;
+
+            // 👇 【關鍵修復】：使用官方的 WakeUp() 函數
+            // 它會正確啟動音頻引擎、發出「滴」聲，並完美支援按鍵取消！
+            Application::GetInstance().SetDeviceState(kDeviceStateSpeaking);
+        });
+    }
+}
+
+static void mqtt_init_task(void* pvParameters) {
+    // 等待 5 秒，確保 ESP32 的 Wi-Fi 和網路核心完全啟動，防止崩潰
+    vTaskDelay(pdMS_TO_TICKS(5000));
+
+    // 自動獲取本機的 MAC 地址 (不需手動輸入)
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+
+    // 將 MAC 地址轉為小寫字串 (例如 7ce8xxxxxx)，並組合成訂閱主題
+    static char mqtt_topic[64];
+    snprintf(mqtt_topic, sizeof(mqtt_topic), "xiaozhi/command/%02x%02x%02x%02x%02x%02x", mac[0],
+             mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    // 設定 MQTT 連線參數
+    esp_mqtt_client_config_t mqtt_cfg = {};
+    // ⚠️ 必改：請填寫你 Home Assistant 的 IP
+    mqtt_cfg.broker.address.uri = "mqtt://192.168.1.201:1883";
+    // ⚠️ 必改：請填寫你剛才在 HA 建立的使用者名稱
+    mqtt_cfg.credentials.username = "xiaozhi_mqtt";
+    // ⚠️ 必改：請填寫對應的密碼
+    mqtt_cfg.credentials.authentication.password = "036345";
+
+    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+
+    // 註冊事件回呼函數，並把 topic 當作參數傳進去
+    esp_mqtt_client_register_event(client, MQTT_EVENT_ANY, mqtt_event_handler, (void*)mqtt_topic);
+
+    // 啟動 MQTT 客戶端 (它會在背景自動保持連線與斷線重連)
+    esp_mqtt_client_start(client);
+
+    // 任務完成，刪除自己以釋放記憶體
+    vTaskDelete(NULL);
+}
+
 // --- 鉤子 1：初始化 UI ---
 void CustomApp_InitUI(lv_obj_t* parent) {
     srand(esp_random());
@@ -6032,6 +6101,8 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     xTaskCreate(bus_fetch_task, "bus_task", 4096, NULL, 5, &bus_task_handle);
     // 👇 加入這一行，啟動 IMU 背景初始化
     xTaskCreate(imu_init_task, "imu_init_task", 4096, NULL, 5, NULL);
+    // 👇 加入這一行，啟動 MQTT 背景連線任務
+    xTaskCreate(mqtt_init_task, "mqtt_init_task", 4096, NULL, 5, NULL);
 }
 
 static void reset_avatar_geometry() {
