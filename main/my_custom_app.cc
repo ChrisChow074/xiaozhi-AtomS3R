@@ -5356,9 +5356,10 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
             current_ui_mode = 0;
             ui_mode_changed = true;
 
-            // 👇 【關鍵修復】：使用官方的 WakeUp() 函數
             // 它會正確啟動音頻引擎、發出「滴」聲，並完美支援按鍵取消！
-            Application::GetInstance().SetDeviceState(kDeviceStateSpeaking);
+            if (ai_single_click_cb) {
+                ai_single_click_cb();
+            }
         });
     }
 }
