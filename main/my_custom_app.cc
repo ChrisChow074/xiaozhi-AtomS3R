@@ -532,7 +532,7 @@ static void touch_wake_task(void* pvParameters) {
                     DeviceState state = Application::GetInstance().GetDeviceState();
                     if (state == kDeviceStateIdle) {
                         ESP_LOGI("Touch", "😠 摸太久了，發脾氣！");
-                        pending_emotion_cmd = (esp_random() % 2 == 0) ? "angry" : "confused";
+                        pending_emotion_cmd = (esp_random() % 2 == 0) ? "sleepy" : "confused";
                         petting_emotion_timer = 20;  // 表情維持 2 秒
                     }
                 }
