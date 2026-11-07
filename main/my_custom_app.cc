@@ -4003,24 +4003,43 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             global_accel_y = accel_y;
 
             // =======================================================
-            // 🔄 智慧螢幕翻轉引擎
+            // 🔄 智慧螢幕 4 向翻轉引擎 (專為 AtomS3R 正方形螢幕設計)
             // =======================================================
-            // 🌟 2. 限制只在 AI(0)、時間(3)、天氣(6) 模式下才允許翻轉，防止遊戲(2)/APP(5)中誤觸
+            // 🌟 限制只在 AI(0)、時間(3)、天氣(6) 模式下才允許翻轉，防止遊戲(2)/APP(5)中誤觸
             if (current_ui_mode == 0 || current_ui_mode == 3 || current_ui_mode == 6) {
-                static bool is_flipped = false;
                 const int16_t FLIP_THRESHOLD = 5000;
+                // 使用 static 記住當前的旋轉狀態
+                static lv_display_rotation_t current_rot = LV_DISPLAY_ROTATION_0;
+                lv_display_rotation_t target_rot = current_rot;
 
-                if (accel_y > FLIP_THRESHOLD && !is_flipped) {
-                    is_flipped = true;
-                    lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_180);
-                    ESP_LOGI("Display", "🔄 偵測到倒轉，畫面已翻轉 180 度");
-                } else if (accel_y < -FLIP_THRESHOLD && is_flipped) {
-                    is_flipped = false;
-                    lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_0);
-                    ESP_LOGI("Display", "🔄 偵測到正放，畫面已恢復正常");
+                // 根據重力在哪一個軸向上最大，決定翻轉方向
+                if (accel_y < -FLIP_THRESHOLD) {
+                    target_rot = LV_DISPLAY_ROTATION_0;  // ⬆️ 正常正放 (0度)
+                } else if (accel_y > FLIP_THRESHOLD) {
+                    target_rot = LV_DISPLAY_ROTATION_180;  // ⬇️ 完全倒放 (180度)
+                } else if (accel_x > FLIP_THRESHOLD) {
+                    // 👇 【修改這裡】：將原本的 270 改為 90
+                    target_rot = LV_DISPLAY_ROTATION_90;
+                } else if (accel_x < -FLIP_THRESHOLD) {
+                    // 👇 【修改這裡】：將原本的 90 改為 270
+                    target_rot = LV_DISPLAY_ROTATION_270;
+                }
+
+                // 如果目標方向跟目前方向不一樣，才呼叫 LVGL 進行旋轉
+                if (target_rot != current_rot) {
+                    current_rot = target_rot;
+                    lv_display_set_rotation(lv_display_get_default(), current_rot);
+
+                    if (current_rot == LV_DISPLAY_ROTATION_0)
+                        ESP_LOGI("Display", "🔄 畫面切換：正常正放");
+                    else if (current_rot == LV_DISPLAY_ROTATION_90)
+                        ESP_LOGI("Display", "🔄 畫面切換：向右旋轉 90 度");
+                    else if (current_rot == LV_DISPLAY_ROTATION_180)
+                        ESP_LOGI("Display", "🔄 畫面切換：倒轉 180 度");
+                    else if (current_rot == LV_DISPLAY_ROTATION_270)
+                        ESP_LOGI("Display", "🔄 畫面切換：向左旋轉 90 度");
                 }
             }
-            // =======================================================
 
             if (current_ui_mode == 0 && face_container != nullptr) {
                 int max_offset = 12;
