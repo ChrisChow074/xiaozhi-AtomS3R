@@ -155,6 +155,7 @@ static void update_eye_size_realtime() {
     if (!avatar_left_eye || !avatar_right_eye)
         return;
 
+    /*
     // 計算左眼最終尺寸 (基底尺寸 + 動畫偏移)
     int base_l_w = current_eye_base_w + current_anim_offset_w_left;
     int base_l_h = current_eye_base_h + current_anim_offset_h_left;
@@ -189,6 +190,24 @@ static void update_eye_size_realtime() {
         squish_r_h = base_r_h / MOVE_EYE_H;
 
     lv_obj_set_size(avatar_right_eye, base_r_w - squish_r_w, base_r_h - squish_r_h);
+    */
+    // 左眼：只保留基底尺寸與動畫，不隨重力變形
+    int base_l_w = current_eye_base_w + current_anim_offset_w_left;
+    int base_l_h = current_eye_base_h + current_anim_offset_h_left;
+    if (base_l_w < 2)
+        base_l_w = 2;
+    if (base_l_h < 2)
+        base_l_h = 2;
+    lv_obj_set_size(avatar_left_eye, base_l_w, base_l_h);
+
+    // 右眼：只保留基底尺寸與動畫，不隨重力變形
+    int base_r_w = current_eye_base_w + current_anim_offset_w_right;
+    int base_r_h = current_eye_base_h + current_anim_offset_h_right;
+    if (base_r_w < 2)
+        base_r_w = 2;
+    if (base_r_h < 2)
+        base_r_h = 2;
+    lv_obj_set_size(avatar_right_eye, base_r_w, base_r_h);
 }
 
 static void set_eye_size(int width, int height) {
@@ -4042,6 +4061,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             }
 
             if (current_ui_mode == 0 && face_container != nullptr) {
+                /*
                 int max_offset = 12;
 
                 int offset_x = (accel_x * max_offset) / 4096;
@@ -4057,8 +4077,10 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                     offset_y = -max_offset;
 
                 lv_obj_align(face_container, LV_ALIGN_CENTER, -offset_x, offset_y);
+                */
 
-                // ✨ 即時更新眼睛尺寸 (套用 3D 透視感)
+                // 👇 將裡面的邏輯清空，改為絕對置中！
+                lv_obj_align(face_container, LV_ALIGN_CENTER, 0, 0);
                 update_eye_size_realtime();
             }
 
