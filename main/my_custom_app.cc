@@ -23,7 +23,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
-// static const char* TAG = "MyCustomApp";
+// AtomS3R
 
 // ==========================================
 // 天氣模式專屬變數
@@ -51,20 +51,20 @@ static bool clock_is_bright = false;  // 目前是否為高亮狀態
 static int clock_dim_countdown = 0;   // 倒數計時器 (每 100ms 扣 1)
 const int CLOCK_DIM_TIMEOUT_SEC = 5;  // 亮起後等待幾秒自動變暗 (可自行改成 3 或 5 秒)
 
-#define EYE_BASE_W 26  // 眼睛基準寬度 24
+#define EYE_BASE_W 28  // 眼睛基準寬度 24
 #define EYE_BASE_H 30  // 眼睛基準高度 28
 #define EYE_POS_L -30  // -30
 #define EYE_POS_R 30   // 30
 #define EYE_POS_H -8
-#define EYE_CORNER 10  // (LV_RADIUS_CIRCLE)
+#define EYE_CORNER 12  // (LV_RADIUS_CIRCLE)
 #define MOUTH_BASE_W 26
 #define MOUTH_BASE_H 6
-#define MOUTH_POS_H 12
+#define MOUTH_POS_H 10
 
 #define BRIGHTNESS_DIM 5
 
 // ==========================================
-//           螢幕解析度常數 (M5StickS3)
+//           螢幕解析度常數 (M5AtomS3R)
 // ==========================================
 #define LCD_W 128
 #define LCD_H 128
