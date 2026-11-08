@@ -5564,7 +5564,6 @@ CONFIG_LVGL_VERSION_PATCH=0
 #
 # end of Component config
 
-# default:
 # CONFIG_IDF_EXPERIMENTAL_FEATURES is not set
 
 # Deprecated options for backward compatibility
