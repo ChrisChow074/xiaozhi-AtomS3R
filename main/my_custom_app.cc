@@ -2972,6 +2972,46 @@ static void slot_stop_reel(int col) {
     lv_anim_start(&a);
 }
 
+static void reset_avatar_geometry() {
+    lv_obj_t* all_parts[] = {
+        avatar_left_eye,    avatar_right_eye,    avatar_sad_eye, avatar_surprised_eye,
+        avatar_angry_eye,   avatar_cool,         avatar_confuse, avatar_tears,
+        avatar_sweat,       avatar_embrassing,   avatar_anger,   avatar_heart,
+        avatar_sleepy_z,    avatar_swallow,      avatar_mouth,   avatar_mouth_happy,
+        avatar_mouth_laugh, avatar_silly_tongue, avatar_kissy};
+    for (int i = 0; i < sizeof(all_parts) / sizeof(all_parts[0]); i++) {
+        if (all_parts[i]) {
+            lv_obj_set_style_translate_x(all_parts[i], 0, 0);
+            lv_obj_set_style_translate_y(all_parts[i], 0, 0);
+        }
+    }
+
+    if (avatar_left_eye) {
+        lv_obj_set_size(avatar_left_eye, EYE_BASE_W, EYE_BASE_H);
+        lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);               // 🌟 改為 4 保持一致
+        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H);  // 基準左眼
+    }
+    if (avatar_right_eye) {
+        lv_obj_set_size(avatar_right_eye, EYE_BASE_W, EYE_BASE_H);
+        lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);  // 🌟 改為 4 保持一致
+        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H);  // 基準右眼
+    }
+    if (avatar_mouth) {
+        lv_obj_set_size(avatar_mouth, MOUTH_BASE_W, MOUTH_BASE_H);
+        lv_obj_set_style_radius(avatar_mouth, 8, 0);
+        lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);  // 基準嘴巴 (置中)
+    }
+    // 👇 確保眼球的重力偏移也回到正中央
+    if (left_eye_ball)
+        lv_obj_align(left_eye_ball, LV_ALIGN_CENTER, 1, -1);
+    if (right_eye_ball)
+        lv_obj_align(right_eye_ball, LV_ALIGN_CENTER, -1, -1);
+    if (left_eye_highlight)
+        lv_obj_align(left_eye_highlight, LV_ALIGN_TOP_RIGHT, 1, -1);
+    if (right_eye_highlight)
+        lv_obj_align(right_eye_highlight, LV_ALIGN_TOP_RIGHT, 1, -1);
+}
+
 // --- 定時器：控制畫面刷新與狀態 ---
 static void custom_app_timer_cb(lv_timer_t* timer) {
     /*
@@ -5731,66 +5771,132 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     lv_anim_del(avatar_right_eye, NULL);
 
     if (current_state == kDeviceStateListening) {
-        set_eye_size(EYE_BASE_W, EYE_BASE_H);
-        current_anim_offset_h_right = EYE_BASE_W - EYE_BASE_H;  // 右眼變成圓形
-        update_eye_size_realtime();
-
-        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H);
-        lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);
-        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H);
-        lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);
-        lv_obj_set_size(avatar_mouth, MOUTH_BASE_W - 4, MOUTH_BASE_H);
-        lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
-        lv_obj_set_style_radius(avatar_mouth, 8, 0);
-
-        if (left_eye_ball)
-            lv_obj_remove_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_ball)
-            lv_obj_remove_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
-
         if (backlight)
             backlight->SetBrightness(100);
+
+        // 1. 【防禦機制】：只有在「普通」狀態時，才切換為「專心聆聽 (右眼變圓、小嘴)」的特有表情
+        // 如果正在生氣或大哭，絕對不允許破壞當下情緒的眼睛與嘴巴形狀！
+        if (current_active_emotion == "neutral" || current_active_emotion == "idle" ||
+            current_active_emotion == "") {
+            set_eye_size(EYE_BASE_W, EYE_BASE_H);
+            current_anim_offset_h_right = EYE_BASE_W - EYE_BASE_H;  // 右眼變成圓形
+            update_eye_size_realtime();
+
+            lv_obj_set_size(avatar_right_eye, EYE_BASE_W, EYE_BASE_W);
+            lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H);
+
+            lv_obj_set_size(avatar_mouth, MOUTH_BASE_W - 4, MOUTH_BASE_H);
+            lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
+        }
+
+        // 2. 確保眼球顯示 (任何情緒下聆聽都應該顯示眼球)
+        if (left_eye_ball) {
+            lv_obj_remove_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(left_eye_ball);
+        }
+        if (right_eye_ball) {
+            lv_obj_remove_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(right_eye_ball);
+        }
     } else if (current_state == kDeviceStateSpeaking) {
         if (backlight)
             backlight->SetBrightness(100);
 
-        if (current_active_emotion != "laughing" && current_active_emotion != "happy") {
+        // 1. 先清除所有可能在跑的殘留動畫，避免動畫數據互相打架
+        lv_anim_del(avatar_mouth, NULL);
+        if (avatar_mouth_laugh)
+            lv_anim_del(avatar_mouth_laugh, NULL);
+        if (avatar_mouth_happy)
+            lv_anim_del(avatar_mouth_happy, NULL);
+        lv_anim_del(avatar_left_eye, NULL);
+        lv_anim_del(avatar_right_eye, NULL);
+
+        // 2. 如果是普通狀態，把 Listening 狀態造成的「右眼變圓」徹底重置！
+        if (current_active_emotion == "neutral" || current_active_emotion == "idle" ||
+            current_active_emotion == "") {
+            set_eye_size(EYE_BASE_W, EYE_BASE_H);  // 歸零所有偏移量
+            reset_avatar_geometry();               // 拉回正中央
+        }
+
+        // 3. 根據當前情緒，強制鎖定正確的【寬度】與【開合幅度】，徹底消滅寬度變形 Bug！
+        lv_obj_t* active_mouth = avatar_mouth;
+        int start_h = MOUTH_BASE_H;
+        int end_h = 28;  // 預設講話的張口高度
+        int target_w = MOUTH_BASE_W;
+
+        if (current_active_emotion == "laughing") {
+            active_mouth = avatar_mouth_laugh;
+            start_h = 15;
+            end_h = 30;
+            target_w = lv_obj_get_width(avatar_mouth_laugh);  // 保持原本定義的寬度
+        } else if (current_active_emotion == "happy") {
+            active_mouth = avatar_mouth_happy;
+            start_h = 10;
+            end_h = 19;
+            target_w = lv_obj_get_width(avatar_mouth_happy);
+        } else if (current_active_emotion == "angry") {
+            start_h = 6;
+            end_h = 16;
+            target_w = 38;  // 👈 強制鎖定：生氣時的超寬嘴巴！
+        } else if (current_active_emotion == "crying" || current_active_emotion == "sad") {
+            start_h = 12;
+            end_h = 26;
+            target_w = 20;
+        } else if (current_active_emotion == "cool" || current_active_emotion == "loving") {
+            start_h = 3;
+            end_h = 12;
+            target_w = 16;
+        } else if (current_active_emotion == "sleepy") {
+            start_h = 10;
+            end_h = 20;
+            target_w = 18;
+        } else if (current_active_emotion == "silly") {
+            start_h = 6;
+            end_h = 16;
+            target_w = MOUTH_BASE_W + 4;
+        }
+
+        // 🎯 【關鍵防彈設計】：每次講話前，強制把嘴巴的寬度與位置校正，無視之前任何動畫的影響！
+        lv_obj_set_width(active_mouth, target_w);
+        lv_obj_align(active_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
+
+        // 4. 切換正確的嘴巴圖層
+        if (active_mouth != avatar_mouth) {
+            lv_obj_add_flag(avatar_mouth, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(active_mouth, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_remove_flag(avatar_mouth, LV_OBJ_FLAG_HIDDEN);
             if (avatar_mouth_laugh)
                 lv_obj_add_flag(avatar_mouth_laugh, LV_OBJ_FLAG_HIDDEN);
             if (avatar_mouth_happy)
                 lv_obj_add_flag(avatar_mouth_happy, LV_OBJ_FLAG_HIDDEN);
-            set_eye_size(EYE_BASE_W, EYE_BASE_H);
-            lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H);
-            lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);
-            lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H);
-            lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);
-            lv_obj_remove_flag(avatar_mouth, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_size(avatar_mouth, MOUTH_BASE_W - 4, MOUTH_BASE_H);
-            lv_obj_set_style_radius(avatar_mouth, 8, 0);
-            lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
+        }
 
-            // 啟動一字嘴開合
-            lv_anim_t a;
-            lv_anim_init(&a);
-            lv_anim_set_var(&a, avatar_mouth);
-            lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_height);
-            lv_anim_set_values(&a, 8, 28);
-            lv_anim_set_duration(&a, 150);
-            lv_anim_set_playback_time(&a, 150);
-            lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-            lv_anim_start(&a);
-            if (left_eye_ball)
+        // 5. 啟動講話的開合動畫
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, active_mouth);
+        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_height);
+        lv_anim_set_values(&a, start_h, end_h);
+        lv_anim_set_duration(&a, 150);
+        lv_anim_set_playback_time(&a, 150);
+        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_start(&a);
+
+        // 6. 確保黑眼球強制顯示，並拉到最上層
+        if (current_active_emotion != "sleepy" && current_active_emotion != "winking") {
+            if (left_eye_ball) {
                 lv_obj_remove_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
-            if (right_eye_ball)
+                lv_obj_move_foreground(left_eye_ball);
+            }
+            if (right_eye_ball) {
                 lv_obj_remove_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
-            if (left_eye_highlight)
-                lv_obj_remove_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-            if (right_eye_highlight)
-                lv_obj_remove_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-
-            start_blink_animation();
-        } else {
-            lv_obj_add_flag(avatar_mouth, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_move_foreground(right_eye_ball);
+            }
+            // 只有普通或生氣狀態才眨眼，避免破壞其他瞇瞇眼的表情
+            if (current_active_emotion == "neutral" || current_active_emotion == "angry") {
+                start_blink_animation();
+            }
         }
     } else {  // 進入待機狀態 (首次切換進來時執行一次)
         if (backlight)
@@ -6645,46 +6751,6 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     xTaskCreate(imu_init_task, "imu_init_task", 4096, NULL, 5, NULL);
     // 👇 加入這一行，啟動 MQTT 背景連線任務
     xTaskCreate(mqtt_init_task, "mqtt_init_task", 4096, NULL, 5, NULL);
-}
-
-static void reset_avatar_geometry() {
-    lv_obj_t* all_parts[] = {
-        avatar_left_eye,    avatar_right_eye,    avatar_sad_eye, avatar_surprised_eye,
-        avatar_angry_eye,   avatar_cool,         avatar_confuse, avatar_tears,
-        avatar_sweat,       avatar_embrassing,   avatar_anger,   avatar_heart,
-        avatar_sleepy_z,    avatar_swallow,      avatar_mouth,   avatar_mouth_happy,
-        avatar_mouth_laugh, avatar_silly_tongue, avatar_kissy};
-    for (int i = 0; i < sizeof(all_parts) / sizeof(all_parts[0]); i++) {
-        if (all_parts[i]) {
-            lv_obj_set_style_translate_x(all_parts[i], 0, 0);
-            lv_obj_set_style_translate_y(all_parts[i], 0, 0);
-        }
-    }
-
-    if (avatar_left_eye) {
-        lv_obj_set_size(avatar_left_eye, EYE_BASE_W, EYE_BASE_H);
-        lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);               // 🌟 改為 4 保持一致
-        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H);  // 基準左眼
-    }
-    if (avatar_right_eye) {
-        lv_obj_set_size(avatar_right_eye, EYE_BASE_W, EYE_BASE_H);
-        lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);  // 🌟 改為 4 保持一致
-        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H);  // 基準右眼
-    }
-    if (avatar_mouth) {
-        lv_obj_set_size(avatar_mouth, MOUTH_BASE_W, MOUTH_BASE_H);
-        lv_obj_set_style_radius(avatar_mouth, 8, 0);
-        lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);  // 基準嘴巴 (置中)
-    }
-    // 👇 確保眼球的重力偏移也回到正中央
-    if (left_eye_ball)
-        lv_obj_align(left_eye_ball, LV_ALIGN_CENTER, 1, -1);
-    if (right_eye_ball)
-        lv_obj_align(right_eye_ball, LV_ALIGN_CENTER, -1, -1);
-    if (left_eye_highlight)
-        lv_obj_align(left_eye_highlight, LV_ALIGN_TOP_RIGHT, 1, -1);
-    if (right_eye_highlight)
-        lv_obj_align(right_eye_highlight, LV_ALIGN_TOP_RIGHT, 1, -1);
 }
 
 // ==========================================
