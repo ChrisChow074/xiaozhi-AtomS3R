@@ -63,15 +63,17 @@ const int CLOCK_DIM_TIMEOUT_SEC = 5;  // 亮起後等待幾秒自動變暗 (可�
 
 static const char* pending_emotion_cmd = nullptr;  // 用來安全傳遞表情指令
 
-#define EYE_BASE_W 26  // 眼睛基準寬度 (original 22)
-#define EYE_BASE_H 35  // 眼睛基準高度 (original 30)
-#define EYE_POS_L -30  // (original 30)
-#define EYE_POS_R 30   // (original -30)
-#define EYE_POS_H -6
-#define EYE_CORNER 11  // (LV_RADIUS_CIRCLE)
-#define MOUTH_BASE_W 24
+#define EYE_BASE_W 32  // 眼睛基準寬度 (original 22)
+#define EYE_BASE_H 40  // 眼睛基準高度 (original 30)
+#define EYE_BALL_W 55  // 眼睛的45%
+#define EYE_BALL_H 60  // 眼睛的55%
+#define EYE_POS_L -32  // (original 30)
+#define EYE_POS_R 32   // (original -30)
+#define EYE_POS_H -10
+#define EYE_CORNER 14  // (LV_RADIUS_CIRCLE)
+#define MOUTH_BASE_W 20
 #define MOUTH_BASE_H 6
-#define MOUTH_POS_H 20
+#define MOUTH_POS_H 10
 
 // ==========================================
 //           螢幕解析度常數 (M5StickS3)
@@ -131,16 +133,18 @@ static std::string current_active_emotion = "neutral";
 static lv_obj_t* face_container = nullptr;
 static lv_obj_t* avatar_left_eye = nullptr;
 static lv_obj_t* avatar_right_eye = nullptr;
+static lv_obj_t* left_eye_ball = nullptr;
+static lv_obj_t* right_eye_ball = nullptr;
 static lv_obj_t* left_eye_highlight = nullptr;
 static lv_obj_t* right_eye_highlight = nullptr;
 
 // ==========================================
 // ✨ 待機動畫排程器與設定 ✨
 // ==========================================
-#define LOOK_MAX_X 8         // 【你可以在此調整】眼睛左右移動的最大幅度 (像素)
-#define LOOK_MAX_Y 14        // 【你可以在此調整】眼睛上下移動的最大幅度 (像素)
-#define LOOK_MOUTH_MAX_X 6   // 嘴巴左右移動的最大幅度 (建議設為眼睛的一半)
-#define LOOK_MOUTH_MAX_Y 10  // 嘴巴上下移動的最大幅度 (稍微動一點點即可)
+#define LOOK_MAX_X 10        // 【你可以在此調整】眼睛左右移動的最大幅度 (像素)
+#define LOOK_MAX_Y 16        // 【你可以在此調整】眼睛上下移動的最大幅度 (像素)
+#define LOOK_MOUTH_MAX_X 8   // 嘴巴左右移動的最大幅度 (建議設為眼睛的一半)
+#define LOOK_MOUTH_MAX_Y 13  // 嘴巴上下移動的最大幅度 (稍微動一點點即可)
 
 static int current_look_pattern = 0;
 static int idle_anim_state = 0;   // 0:正常待機(眨眼), 1:四處看, 2:打呵欠
@@ -158,13 +162,14 @@ static int current_anim_offset_w_right = 0;
 static int16_t global_accel_x = 0;
 static int16_t global_accel_y = 0;
 
-#define MOVE_EYE_W 6
-#define MOVE_EYE_H 5
+// #define MOVE_EYE_W 7
+// #define MOVE_EYE_H 8
 
 static void update_eye_size_realtime() {
     if (!avatar_left_eye || !avatar_right_eye)
         return;
 
+    /*
     // 計算左眼最終尺寸 (基底尺寸 + 動畫偏移)
     int base_l_w = current_eye_base_w + current_anim_offset_w_left;
     int base_l_h = current_eye_base_h + current_anim_offset_h_left;
@@ -199,6 +204,24 @@ static void update_eye_size_realtime() {
         squish_r_h = base_r_h / MOVE_EYE_H;
 
     lv_obj_set_size(avatar_right_eye, base_r_w - squish_r_w, base_r_h - squish_r_h);
+    */
+    // 左眼：只保留基底尺寸與動畫，不隨重力變形
+    int base_l_w = current_eye_base_w + current_anim_offset_w_left;
+    int base_l_h = current_eye_base_h + current_anim_offset_h_left;
+    if (base_l_w < 2)
+        base_l_w = 2;
+    if (base_l_h < 2)
+        base_l_h = 2;
+    lv_obj_set_size(avatar_left_eye, base_l_w, base_l_h);
+
+    // 右眼：只保留基底尺寸與動畫，不隨重力變形
+    int base_r_w = current_eye_base_w + current_anim_offset_w_right;
+    int base_r_h = current_eye_base_h + current_anim_offset_h_right;
+    if (base_r_w < 2)
+        base_r_w = 2;
+    if (base_r_h < 2)
+        base_r_h = 2;
+    lv_obj_set_size(avatar_right_eye, base_r_w, base_r_h);
 }
 
 static void set_eye_size(int width, int height) {
@@ -400,6 +423,7 @@ static void imu_init_task(void* pvParameters) {
 // 背景任務：被喚醒後去抓取巴士時間
 static void bus_fetch_task(void* pvParameters) {
     char url[128];
+    // password
     snprintf(url, sizeof(url), "http://chowcfu.duckdns.org:8001/api/bus");
 
     while (1) {
@@ -481,6 +505,7 @@ static TaskHandle_t weather_task_handle = nullptr;
 static int64_t last_weather_fetch_us = 0;
 
 // 【重要】填入你申請到的 OpenWeatherMap API Key！
+// password
 #define OWM_API_KEY "b5aef42ed255665f9024ea34161bcaa7"
 
 // ==========================================
@@ -491,6 +516,7 @@ static void weather_update_task(void* pvParameters) {
 
     char url[128];
     // 【修改為你 iMac 的內網 IP 與 Port】
+    // password
     snprintf(url, sizeof(url), "http://chowcfu.duckdns.org:8001/api/weather/simple");
 
     while (1) {
@@ -2293,8 +2319,8 @@ static void anim_mouth_snore_cb(void* var, int32_t v) {
     // ==========================================
     // 1. 定義【合上口】時的尺寸 (v = 0 時的狀態)
     // ==========================================
-    int32_t close_w = MOUTH_BASE_W;  // <-- 你設定的合上寬度 38！
-    int32_t close_h = 8;             // 合上時的高度 (例如扁扁的一條線 6px)
+    int32_t close_w = MOUTH_BASE_W;  // <-- 你設定的合上寬度
+    int32_t close_h = MOUTH_BASE_H;  // 合上時的高度
 
     // ==========================================
     // 2. 定義【張開打呼】時的尺寸 (v = 100 時的狀態)
@@ -2390,7 +2416,6 @@ static void anim_look_cb(void* var, int32_t v) {
     // ==========================================
 
     // 1. 眼睛與所有上半部裝飾 (使用 tx, ty)
-    // 這樣一來，不論是眼淚、汗水、愛心還是青筋，都會完美跟著眼睛移動！
     lv_obj_t* eye_parts[] = {
         avatar_left_eye, avatar_right_eye, avatar_sad_eye,  avatar_surprised_eye, avatar_angry_eye,
         avatar_cool,     avatar_confuse,   avatar_tears,    avatar_sweat,         avatar_embrassing,
@@ -2401,6 +2426,23 @@ static void anim_look_cb(void* var, int32_t v) {
             lv_obj_set_style_translate_y(eye_parts[i], ty, 0);
         }
     }
+
+    // 👇 【新增】黑眼球的額外平移 (比眼睛本體快，產生視差)
+    // 因為眼球是眼睛的子物件，所以給它額外的 translate 會疊加在眼睛的移動上！
+    int px = (tx * 7) / 10;  // 額外多走 70% 的距離
+    int py = (ty * 7) / 10;
+    if (left_eye_ball) {
+        lv_obj_set_style_translate_x(left_eye_ball, px, 0);
+        lv_obj_set_style_translate_y(left_eye_ball, py, 0);
+    }
+    if (right_eye_ball) {
+        lv_obj_set_style_translate_x(right_eye_ball, px, 0);
+        lv_obj_set_style_translate_y(right_eye_ball, py, 0);
+    }
+    if (left_eye_highlight)
+        lv_obj_remove_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+    if (right_eye_highlight)
+        lv_obj_remove_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
     // 2. 所有嘴巴形態 (使用 mx, my，產生 3D 視差)
     lv_obj_t* mouth_parts[] = {avatar_mouth, avatar_mouth_happy, avatar_mouth_laugh,
@@ -4371,11 +4413,78 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             }
             // =======================================================
 
-            if (current_ui_mode == 0 && face_container != nullptr) {
-                int max_offset = 12;
+            // =======================================================
+            // 🔄 智慧螢幕 4 向翻轉引擎 (專為 AtomS3R 正方形螢幕設計)
+            // =======================================================
+            // 將 current_rot 提昇到外層，讓後面的校準引擎也能讀取目前的角度
+            static lv_display_rotation_t current_rot = LV_DISPLAY_ROTATION_0;
 
-                int offset_x = (accel_x * max_offset) / 4096;
-                int offset_y = (accel_y * max_offset) / 4096;
+            if (current_ui_mode == 0 || current_ui_mode == 3 || current_ui_mode == 6) {
+                const int16_t FLIP_THRESHOLD = 5000;
+                lv_display_rotation_t target_rot = current_rot;
+
+                if (accel_y < -FLIP_THRESHOLD) {
+                    target_rot = LV_DISPLAY_ROTATION_0;
+                } else if (accel_y > FLIP_THRESHOLD) {
+                    target_rot = LV_DISPLAY_ROTATION_180;
+                }
+
+                if (target_rot != current_rot) {
+                    current_rot = target_rot;
+                    lv_display_set_rotation(lv_display_get_default(), current_rot);
+                }
+            }
+
+            // =======================================================
+            // 🧠 智慧重心校準引擎 (Auto-Calibration Engine)
+            // 解決旋轉後眼睛偏移問題，1.5秒後自動將當下角度設為「正中心」
+            // =======================================================
+            static int32_t base_ax = 0;
+            static int32_t base_ay = 0;
+
+            // 1. 計算重力的長期平均值 (基準線)
+            if (base_ax == 0 && base_ay == 0) {
+                base_ax = accel_x;  // 首次開機瞬間對齊
+                base_ay = accel_y;
+            } else {
+                // 指數移動平均 (EMA)，除以 16 代表大約 1.5 秒會完全收斂回中央
+                base_ax = (base_ax * 15 + accel_x) / 16;
+                base_ay = (base_ay * 15 + accel_y) / 16;
+            }
+
+            // 2. 算出「扣除靜態重力後」的動態晃動量
+            int16_t dyn_x = accel_x - base_ax;
+            int16_t dyn_y = accel_y - base_ay;
+
+            // 3. 根據目前的螢幕旋轉角度，旋轉 2D 向量
+            // 讓小智不論怎麼倒轉，視覺上的「上下左右」永遠跟你的手感保持一致！
+            int16_t ui_x = 0;
+            int16_t ui_y = 0;
+
+            if (current_rot == LV_DISPLAY_ROTATION_0) {
+                ui_x = dyn_x;
+                ui_y = dyn_y;
+            } else if (current_rot == LV_DISPLAY_ROTATION_90) {
+                ui_x = -dyn_y;
+                ui_y = dyn_x;
+            } else if (current_rot == LV_DISPLAY_ROTATION_180) {
+                ui_x = -dyn_x;
+                ui_y = -dyn_y;
+            } else if (current_rot == LV_DISPLAY_ROTATION_270) {
+                ui_x = dyn_y;
+                ui_y = -dyn_x;
+            }
+
+            // =======================================================
+            // 👀 臉部與眼球雙層視差更新
+            // =======================================================
+            if (current_ui_mode == 0 && face_container != nullptr) {
+                // 1. 臉部整體本體的移動幅度 (設小一點，比較沉穩)
+                int max_offset = 6;
+
+                // 👇 這裡改用剛才算出來的 ui_x 和 ui_y
+                int offset_x = (ui_x * max_offset) / 4096;
+                int offset_y = (ui_y * max_offset) / 4096;
 
                 if (offset_x > max_offset)
                     offset_x = max_offset;
@@ -4388,7 +4497,26 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
                 lv_obj_align(face_container, LV_ALIGN_CENTER, -offset_x, offset_y);
 
-                // ✨ 即時更新眼睛尺寸 (套用 3D 透視感)
+                // 2. 黑眼球的額外重力偏移 (移動範圍更大、更靈敏)
+                int max_pupil = 7;
+                int pupil_x = (ui_x * max_pupil) / 4096;
+                int pupil_y = (ui_y * max_pupil) / 4096;
+
+                if (pupil_x > max_pupil)
+                    pupil_x = max_pupil;
+                if (pupil_x < -max_pupil)
+                    pupil_x = -max_pupil;
+                if (pupil_y > max_pupil)
+                    pupil_y = max_pupil;
+                if (pupil_y < -max_pupil)
+                    pupil_y = -max_pupil;
+
+                if (left_eye_ball)
+                    lv_obj_align(left_eye_ball, LV_ALIGN_CENTER, -pupil_x, pupil_y);
+                if (right_eye_ball)
+                    lv_obj_align(right_eye_ball, LV_ALIGN_CENTER, -pupil_x, pupil_y);
+
+                // ✨ 即時更新眼睛尺寸
                 update_eye_size_realtime();
             }
 
@@ -5615,10 +5743,10 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
 
-        if (left_eye_highlight)
-            lv_obj_remove_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_highlight)
-            lv_obj_remove_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (left_eye_ball)
+            lv_obj_remove_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_ball)
+            lv_obj_remove_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
 
         if (backlight)
             backlight->SetBrightness(100);
@@ -5651,6 +5779,10 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             lv_anim_set_playback_time(&a, 150);
             lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
             lv_anim_start(&a);
+            if (left_eye_ball)
+                lv_obj_remove_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+            if (right_eye_ball)
+                lv_obj_remove_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
             if (left_eye_highlight)
                 lv_obj_remove_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
             if (right_eye_highlight)
@@ -5671,6 +5803,10 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);
         lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);
+        if (left_eye_ball)
+            lv_obj_remove_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_ball)
+            lv_obj_remove_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (left_eye_highlight)
             lv_obj_remove_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_highlight)
@@ -5773,6 +5909,7 @@ static void mqtt_init_task(void* pvParameters) {
     // ⚠️ 必改：請填寫你剛才在 HA 建立的使用者名稱
     mqtt_cfg.credentials.username = "xiaozhi_mqtt";
     // ⚠️ 必改：請填寫對應的密碼
+    // password
     mqtt_cfg.credentials.authentication.password = "036345";
 
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
@@ -5797,8 +5934,8 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     // avatar_theme_color = lv_obj_get_style_text_color(parent, LV_PART_MAIN);   // 黑色
     // lv_obj_set_style_text_color(parent, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
-    // avatar_theme_color = lv_color_make(100, 0, 255); // blue
-    avatar_theme_color = lv_color_make(255, 120, 0);  // orange
+    avatar_theme_color = lv_color_make(0, 200, 255);  // blue
+    // avatar_theme_color = lv_color_make(255, 150, 0);  // orange
 
     // ==============================================
     // 【新增】建立一個臉部總容器，用來做重力跟隨移動
@@ -5821,15 +5958,26 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     lv_obj_clear_flag(avatar_left_eye, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H);
 
-    left_eye_highlight = lv_obj_create(avatar_left_eye);
-    // 【修改 1】使用百分比：寬度佔眼睛 35%，高度佔 40% (不管眼睛怎麼縮放，高光自動跟著縮放！)
-    lv_obj_set_size(left_eye_highlight, lv_pct(40), lv_pct(40) + 2);
-    lv_obj_set_style_bg_color(left_eye_highlight, lv_color_white(), 0);
+    left_eye_ball = lv_obj_create(avatar_left_eye);
+    // 設定為眼白的 45% 寬、55% 高 (橢圓形瞳孔最可愛)
+    lv_obj_set_size(left_eye_ball, lv_pct(EYE_BALL_W), lv_pct(EYE_BALL_H));
+    lv_obj_set_style_bg_color(left_eye_ball, lv_color_black(), 0);  // 改為黑色
+    lv_obj_set_style_bg_opa(left_eye_ball, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(left_eye_ball, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(left_eye_ball, 0, 0);
+    lv_obj_set_style_pad_all(left_eye_ball, 0, 0);
+    // 預設完美置中
+    lv_obj_align(left_eye_ball, LV_ALIGN_CENTER, 1, -1);
+    lv_obj_clear_flag(left_eye_ball, LV_OBJ_FLAG_SCROLLABLE);
+
+    left_eye_highlight = lv_obj_create(left_eye_ball);
+    // lv_obj_set_size(left_eye_highlight, lv_pct(60), lv_pct(40));
+    lv_obj_set_size(left_eye_highlight, 10, 10);
+    lv_obj_set_style_bg_color(left_eye_highlight, lv_color_white(), 0);  // 改為黑色
     lv_obj_set_style_bg_opa(left_eye_highlight, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(left_eye_highlight, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_border_width(left_eye_highlight, 0, 0);
-    // 【修改 2】對齊右上角，稍微往內縮 (X: -2, Y: 2) 會更有神
-    lv_obj_align(left_eye_highlight, LV_ALIGN_TOP_RIGHT, -4, 5);
+    lv_obj_align(left_eye_highlight, LV_ALIGN_TOP_RIGHT, 1, -1);
     lv_obj_clear_flag(left_eye_highlight, LV_OBJ_FLAG_SCROLLABLE);
 
     avatar_right_eye = lv_obj_create(face_container);
@@ -5841,15 +5989,25 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     lv_obj_clear_flag(avatar_right_eye, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H);
 
-    right_eye_highlight = lv_obj_create(avatar_right_eye);
-    // 同樣設定為百分比
-    lv_obj_set_size(right_eye_highlight, lv_pct(40), lv_pct(40) + 2);
-    lv_obj_set_style_bg_color(right_eye_highlight, lv_color_white(), 0);
+    right_eye_ball = lv_obj_create(avatar_right_eye);
+    lv_obj_set_size(right_eye_ball, lv_pct(EYE_BALL_W), lv_pct(EYE_BALL_H));
+    lv_obj_set_style_bg_color(right_eye_ball, lv_color_black(), 0);  // 改為黑色
+    lv_obj_set_style_bg_opa(right_eye_ball, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(right_eye_ball, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(right_eye_ball, 0, 0);
+    lv_obj_set_style_pad_all(right_eye_ball, 0, 0);
+    // 預設完美置中
+    lv_obj_align(right_eye_ball, LV_ALIGN_CENTER, -1, -1);
+    lv_obj_clear_flag(right_eye_ball, LV_OBJ_FLAG_SCROLLABLE);
+
+    right_eye_highlight = lv_obj_create(right_eye_ball);
+    // lv_obj_set_size(right_eye_highlight, lv_pct(60), lv_pct(40));
+    lv_obj_set_size(right_eye_highlight, 10, 10);
+    lv_obj_set_style_bg_color(right_eye_highlight, lv_color_white(), 0);  // 改為黑色
     lv_obj_set_style_bg_opa(right_eye_highlight, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(right_eye_highlight, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_border_width(right_eye_highlight, 0, 0);
-    // 右眼也是對齊右上角 (高光的反光方向通常要一致，才像同一個光源)
-    lv_obj_align(right_eye_highlight, LV_ALIGN_TOP_RIGHT, -4, 5);
+    lv_obj_align(right_eye_highlight, LV_ALIGN_TOP_RIGHT, 1, -1);
     lv_obj_clear_flag(right_eye_highlight, LV_OBJ_FLAG_SCROLLABLE);
 
     avatar_mouth = lv_obj_create(face_container);
@@ -6490,6 +6648,19 @@ void CustomApp_InitUI(lv_obj_t* parent) {
 }
 
 static void reset_avatar_geometry() {
+    lv_obj_t* all_parts[] = {
+        avatar_left_eye,    avatar_right_eye,    avatar_sad_eye, avatar_surprised_eye,
+        avatar_angry_eye,   avatar_cool,         avatar_confuse, avatar_tears,
+        avatar_sweat,       avatar_embrassing,   avatar_anger,   avatar_heart,
+        avatar_sleepy_z,    avatar_swallow,      avatar_mouth,   avatar_mouth_happy,
+        avatar_mouth_laugh, avatar_silly_tongue, avatar_kissy};
+    for (int i = 0; i < sizeof(all_parts) / sizeof(all_parts[0]); i++) {
+        if (all_parts[i]) {
+            lv_obj_set_style_translate_x(all_parts[i], 0, 0);
+            lv_obj_set_style_translate_y(all_parts[i], 0, 0);
+        }
+    }
+
     if (avatar_left_eye) {
         lv_obj_set_size(avatar_left_eye, EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);               // 🌟 改為 4 保持一致
@@ -6505,6 +6676,15 @@ static void reset_avatar_geometry() {
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
         lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);  // 基準嘴巴 (置中)
     }
+    // 👇 確保眼球的重力偏移也回到正中央
+    if (left_eye_ball)
+        lv_obj_align(left_eye_ball, LV_ALIGN_CENTER, 1, -1);
+    if (right_eye_ball)
+        lv_obj_align(right_eye_ball, LV_ALIGN_CENTER, -1, -1);
+    if (left_eye_highlight)
+        lv_obj_align(left_eye_highlight, LV_ALIGN_TOP_RIGHT, 1, -1);
+    if (right_eye_highlight)
+        lv_obj_align(right_eye_highlight, LV_ALIGN_TOP_RIGHT, 1, -1);
 }
 
 // ==========================================
@@ -6574,6 +6754,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         lv_obj_add_flag(avatar_confuse, LV_OBJ_FLAG_HIDDEN);
     if (avatar_sleepy_z)
         lv_obj_add_flag(avatar_sleepy_z, LV_OBJ_FLAG_HIDDEN);
+    if (left_eye_ball)
+        lv_obj_remove_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+    if (right_eye_ball)
+        lv_obj_remove_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
     if (left_eye_highlight)
         lv_obj_remove_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
     if (right_eye_highlight)
@@ -6592,6 +6776,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W, 8);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        if (left_eye_ball)
+            lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_ball)
+            lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (left_eye_highlight)
             lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_highlight)
@@ -6626,6 +6814,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W, 8);  // 眼睛瞇起來哭
         // lv_obj_set_size(avatar_mouth, 20, 20);        // 嘴巴張大哭
         lv_obj_set_style_radius(avatar_mouth, 8, 0);  // 嘴巴帶點圓角
+        if (left_eye_ball)
+            lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_ball)
+            lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (left_eye_highlight)
             lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_highlight)
@@ -6663,6 +6855,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W, 10);  // 眼睛瞇起來哭
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        if (left_eye_ball)
+            lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_ball)
+            lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (left_eye_highlight)
             lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_highlight)
@@ -6695,6 +6891,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W + 6, 8);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 1);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 1);
+        if (left_eye_ball)
+            lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_ball)
+            lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (left_eye_highlight)
             lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_highlight)
@@ -6733,6 +6933,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W, 10);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        if (left_eye_ball)
+            lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_ball)
+            lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (left_eye_highlight)
             lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_highlight)
@@ -6804,6 +7008,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W, 8);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        if (left_eye_ball)
+            lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_ball)
+            lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (left_eye_highlight)
             lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_highlight)
@@ -6821,6 +7029,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W, 8);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        if (left_eye_ball)
+            lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_ball)
+            lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (left_eye_highlight)
             lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_highlight)
@@ -6842,10 +7054,13 @@ void CustomApp_SetEmotion(const char* emotion) {
     } else if (emo_str == "cool") {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_size(avatar_mouth, 1, 1);
-        if (left_eye_highlight)
-            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_highlight)
-            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        /*
+        if (left_eye_ball)
+            lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_ball)
+            lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
+        */
+
         if (avatar_mouth_happy) {
             lv_obj_remove_flag(avatar_mouth_happy, LV_OBJ_FLAG_HIDDEN);
         }
@@ -6858,6 +7073,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         if (avatar_sad_eye) {
             lv_obj_remove_flag(avatar_sad_eye, LV_OBJ_FLAG_HIDDEN);
         }
+        if (left_eye_ball)
+            lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_ball)
+            lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (left_eye_highlight)
             lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_highlight)
@@ -6865,8 +7084,8 @@ void CustomApp_SetEmotion(const char* emotion) {
     } else if (emo_str == "winking") {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_size(avatar_mouth, MOUTH_BASE_W - 4, MOUTH_BASE_H);
-        if (right_eye_highlight)
-            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_ball)
+            lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
 
         lv_anim_del(avatar_right_eye, NULL);
         lv_anim_t a;
@@ -6881,6 +7100,10 @@ void CustomApp_SetEmotion(const char* emotion) {
     } else if (emo_str == "relaxed") {
         set_eye_size(EYE_BASE_W, 8);
         lv_obj_set_size(avatar_mouth, 20, MOUTH_BASE_H);
+        if (left_eye_ball)
+            lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_ball)
+            lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (left_eye_highlight)
             lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_highlight)
@@ -6893,6 +7116,8 @@ void CustomApp_SetEmotion(const char* emotion) {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
         current_anim_offset_h_right = 10 - EYE_BASE_H;  // 右眼瞇起來
         update_eye_size_realtime();
+        if (right_eye_ball)
+            lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_highlight)
             lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_size(avatar_mouth, 12, 12);
@@ -6902,11 +7127,15 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_remove_flag(avatar_kissy, LV_OBJ_FLAG_HIDDEN);
         }
     } else if (emo_str == "sleepy") {
-        set_eye_size(EYE_BASE_W, EYE_BASE_H / 2);
+        set_eye_size(EYE_BASE_W, EYE_BASE_H / 3);
         lv_obj_set_size(avatar_mouth, 18, 20);
         if (avatar_sleepy_z) {
             lv_obj_remove_flag(avatar_sleepy_z, LV_OBJ_FLAG_HIDDEN);
         }
+        if (left_eye_ball)
+            lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
+        if (right_eye_ball)
+            lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (left_eye_highlight)
             lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_highlight)
