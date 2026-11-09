@@ -55,6 +55,9 @@ static lv_obj_t* weather_icon_label = nullptr;
 
 static char last_drawn_weather[32] = "";  // 紀錄上次畫的天氣，避免每秒重複繪製導致閃爍
 
+// 👇 新增這行全域變數 (放在 mqtt_event_handler 的上方即可)
+static esp_mqtt_client_handle_t global_mqtt_client = nullptr;
+
 // 控制時鐘亮暗與 5 秒自動倒數
 static bool clock_is_bright = false;  // 目前是否為高亮狀態
 static int clock_dim_countdown = 0;   // 倒數計時器 (每 100ms 扣 1)
@@ -63,7 +66,7 @@ const int CLOCK_DIM_TIMEOUT_SEC = 5;  // 亮起後等待幾秒自動變暗 (可�
 
 static const char* pending_emotion_cmd = nullptr;  // 用來安全傳遞表情指令
 
-#define EYE_BASE_W 35  // 眼睛基準寬度 (original 22)
+#define EYE_BASE_W 36  // 眼睛基準寬度 (original 22)
 #define EYE_BASE_H 42  // 眼睛基準高度 (original 30)
 #define EYE_BALL_W 55  // 眼睛的45%
 #define EYE_BALL_H 60  // 眼睛的55%
@@ -4188,7 +4191,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             if (backlight)
                 backlight->SetBrightness(100);  // 👈 原本是 BRIGHTNESS_DIM，改為 100
             return;
-        } else if (current_ui_mode == 0) {  // --- 退出遊戲，回到 AI ---
+        } else if (current_ui_mode == 0 || current_ui_mode == 7) {  // --- 退出遊戲，回到 AI ---
             // 恢復臉部顯示
             lv_obj_remove_flag(avatar_left_eye, LV_OBJ_FLAG_HIDDEN);
             lv_obj_remove_flag(avatar_right_eye, LV_OBJ_FLAG_HIDDEN);
@@ -4410,7 +4413,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     // 【體感控制核心】BMI270 讀取與雙遊戲方向分流
     // ==============================================
     if ((current_ui_mode == 0 || current_ui_mode == 2 || current_ui_mode == 3 ||
-         current_ui_mode == 5 || current_ui_mode == 6) &&
+         current_ui_mode == 5 || current_ui_mode == 6 || current_ui_mode == 7) &&
         imu_initialized) {
         static bool tilt_locked_2048 = false;
         uint8_t reg = BMI270_REG_DATA_X_LSB;
@@ -4707,6 +4710,56 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // 👇👇👇 新增：【模式 7】體感電視音量旋鈕 ===================
+    if (current_ui_mode == 7 && imu_initialized) {
+        // 防止螢幕休眠，保持亮度
+        clock_is_bright = true;
+        clock_dim_countdown = 100;  // 刷新防休眠計時
+
+        static int vol_cooldown = 0;
+        if (vol_cooldown > 0)
+            vol_cooldown--;
+
+        // 設定傾斜觸發門檻 (4096 = 1g，設定 2000 大約 30度角，可自行微調手感)
+        // 門檻可以稍微調低一點 (例如 1500)，輕輕轉就能調音量
+        const int16_t TILT_THRESHOLD = 1500;
+
+        if (vol_cooldown == 0) {
+            if (global_accel_x > TILT_THRESHOLD) {
+                // 右傾 -> 大聲
+                if (global_mqtt_client) {
+                    // "UP" 字串長度為 2
+                    esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/volume", "UP", 2, 0, 0);
+                    ESP_LOGI("TV_VOL", "🔼 右傾 - 增加音量");
+                }
+                if (current_active_emotion != "happy") {
+                    pending_emotion_cmd = "happy";  // 扭動時笑一下
+                }
+                vol_cooldown = 3;  // 300ms 冷卻，避免音量暴增
+
+            } else if (global_accel_x < -TILT_THRESHOLD) {
+                // 左傾 -> 細聲
+                if (global_mqtt_client) {
+                    // "DOWN" 字串長度為 4
+                    esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/volume", "DOWN", 4, 0,
+                                            0);
+                    ESP_LOGI("TV_VOL", "🔽 左傾 - 減少音量");
+                }
+                if (current_active_emotion != "surprised") {
+                    pending_emotion_cmd = "surprised";  // 扭動時驚訝一下
+                }
+                vol_cooldown = 3;  // 300ms 冷卻
+            }
+        }
+
+        // 當手勢回到正中間時 (平放)，恢復帥氣的墨鏡表情
+        if (abs(global_accel_x) < 800) {
+            if (current_active_emotion != "cool") {
+                pending_emotion_cmd = "cool";
             }
         }
     }
@@ -5650,7 +5703,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         }
     }
 
-    if (current_ui_mode != 0)
+    if (current_ui_mode != 0 && current_ui_mode != 7)
         return;  // 如果在遊戲模式，不更新臉部表情
 
     // =======================================================
@@ -6018,15 +6071,12 @@ static void mqtt_init_task(void* pvParameters) {
     // password
     mqtt_cfg.credentials.authentication.password = "036345";
 
-    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+    // 👇 將原本的 client 改為 global_mqtt_client
+    global_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
+    esp_mqtt_client_register_event(global_mqtt_client, MQTT_EVENT_ANY, mqtt_event_handler,
+                                   (void*)mqtt_topic);
+    esp_mqtt_client_start(global_mqtt_client);
 
-    // 註冊事件回呼函數，並把 topic 當作參數傳進去
-    esp_mqtt_client_register_event(client, MQTT_EVENT_ANY, mqtt_event_handler, (void*)mqtt_topic);
-
-    // 啟動 MQTT 客戶端 (它會在背景自動保持連線與斷線重連)
-    esp_mqtt_client_start(client);
-
-    // 任務完成，刪除自己以釋放記憶體
     vTaskDelete(NULL);
 }
 
@@ -7302,6 +7352,42 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
 }
 
 void CustomApp_HijackSideButton(Button& side_button) {
+    side_button.OnDoubleClick([]() {
+        idle_to_clock_counter = 0;  // 重置閒置計時
+
+        if (current_system_mode == 7) {
+            // 已經在遙控模式 -> 退出回到 AI 待機
+            current_system_mode = 0;
+            current_ui_mode = 0;
+            ui_mode_changed = true;
+            pending_emotion_cmd = "neutral";
+            ESP_LOGI("SideButton", "側面按鍵雙擊！退出電視音量旋鈕模式");
+
+            auto backlight = Board::GetInstance().GetBacklight();
+            if (backlight)
+                backlight->SetBrightness(100);
+        } else {
+            // 進入遙控模式 (模式 7)
+            current_system_mode = 7;
+            current_ui_mode = 7;
+            ui_mode_changed = true;
+            pending_emotion_cmd = "cool";  // 戴上墨鏡 😎 準備當遙控器
+            ESP_LOGI("SideButton", "側面按鍵雙擊！開始電視音量旋鈕模式");
+
+            // 安全打斷 AI 說話，以免你只是想安靜地調音量
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
+
+            auto backlight = Board::GetInstance().GetBacklight();
+            if (backlight)
+                backlight->SetBrightness(100);
+        }
+    });
+
     side_button.OnClick([]() {
         ESP_LOGI("SideButton", "側面按鍵觸發！當前系統模式: %d", current_system_mode);
         idle_to_clock_counter = 0;  // 只要按鍵，重置閒置計時
