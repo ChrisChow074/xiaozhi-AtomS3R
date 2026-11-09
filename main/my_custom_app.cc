@@ -63,17 +63,17 @@ const int CLOCK_DIM_TIMEOUT_SEC = 5;  // 亮起後等待幾秒自動變暗 (可�
 
 static const char* pending_emotion_cmd = nullptr;  // 用來安全傳遞表情指令
 
-#define EYE_BASE_W 32  // 眼睛基準寬度 (original 22)
-#define EYE_BASE_H 40  // 眼睛基準高度 (original 30)
+#define EYE_BASE_W 35  // 眼睛基準寬度 (original 22)
+#define EYE_BASE_H 42  // 眼睛基準高度 (original 30)
 #define EYE_BALL_W 55  // 眼睛的45%
 #define EYE_BALL_H 60  // 眼睛的55%
 #define EYE_POS_L -32  // (original 30)
 #define EYE_POS_R 32   // (original -30)
-#define EYE_POS_H -10
-#define EYE_CORNER 14  // (LV_RADIUS_CIRCLE)
-#define MOUTH_BASE_W 20
+#define EYE_POS_H -12
+#define EYE_CORNER 17  // (LV_RADIUS_CIRCLE)
+#define MOUTH_BASE_W 22
 #define MOUTH_BASE_H 6
-#define MOUTH_POS_H 10
+#define MOUTH_POS_H 14
 
 // ==========================================
 //           螢幕解析度常數 (M5StickS3)
@@ -6137,14 +6137,14 @@ void CustomApp_InitUI(lv_obj_t* parent) {
 
     // ---------------- 左眼遮罩 ----------------
     lv_obj_t* sad_left = lv_obj_create(avatar_sad_eye);
-    lv_obj_set_size(sad_left, 36, 20);
+    lv_obj_set_size(sad_left, 40, 20);
     lv_obj_set_style_bg_color(sad_left, avatar_theme_bg_color, 0);
     lv_obj_set_style_bg_opa(sad_left, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(sad_left, 0, 0);
     lv_obj_set_style_border_width(sad_left, 0, 0);
 
     // 將旋轉支點設定在方塊正中心 (寬36的一半=18, 高20的一半=10)
-    lv_obj_set_style_transform_pivot_x(sad_left, 18, 0);
+    lv_obj_set_style_transform_pivot_x(sad_left, 20, 0);
     lv_obj_set_style_transform_pivot_y(sad_left, 10, 0);
 
     lv_obj_set_style_transform_angle(sad_left, -150, 0);  // 逆時針 15 度
@@ -6153,14 +6153,14 @@ void CustomApp_InitUI(lv_obj_t* parent) {
 
     // ---------------- 右眼遮罩 ----------------
     lv_obj_t* sad_right = lv_obj_create(avatar_sad_eye);
-    lv_obj_set_size(sad_right, 36, 20);
+    lv_obj_set_size(sad_right, 40, 20);
     lv_obj_set_style_bg_color(sad_right, avatar_theme_bg_color, 0);
     lv_obj_set_style_bg_opa(sad_right, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(sad_right, 0, 0);
     lv_obj_set_style_border_width(sad_right, 0, 0);
 
     // 將旋轉支點設定在方塊正中心
-    lv_obj_set_style_transform_pivot_x(sad_right, 18, 0);
+    lv_obj_set_style_transform_pivot_x(sad_right, 20, 0);
     lv_obj_set_style_transform_pivot_y(sad_right, 10, 0);
 
     lv_obj_set_style_transform_angle(sad_right, 150, 0);  // 順時針 15 度
@@ -6229,14 +6229,14 @@ void CustomApp_InitUI(lv_obj_t* parent) {
 
     // ---------------- 左眼遮罩 ----------------
     lv_obj_t* angry_left = lv_obj_create(avatar_angry_eye);
-    lv_obj_set_size(angry_left, 36, 20);
+    lv_obj_set_size(angry_left, 40, 20);
     lv_obj_set_style_bg_color(angry_left, avatar_theme_bg_color, 0);
     lv_obj_set_style_bg_opa(angry_left, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(angry_left, 0, 0);
     lv_obj_set_style_border_width(angry_left, 0, 0);
 
     // 將旋轉支點設定在方塊正中心 (寬36的一半=18, 高20的一半=10)
-    lv_obj_set_style_transform_pivot_x(angry_left, 18, 0);
+    lv_obj_set_style_transform_pivot_x(angry_left, 20, 0);
     lv_obj_set_style_transform_pivot_y(angry_left, 10, 0);
 
     lv_obj_set_style_transform_angle(angry_left, 150, 0);  // 逆時針 15 度
@@ -6245,14 +6245,14 @@ void CustomApp_InitUI(lv_obj_t* parent) {
 
     // ---------------- 右眼遮罩 ----------------
     lv_obj_t* angry_right = lv_obj_create(avatar_angry_eye);
-    lv_obj_set_size(angry_right, 36, 20);
+    lv_obj_set_size(angry_right, 40, 20);
     lv_obj_set_style_bg_color(angry_right, avatar_theme_bg_color, 0);
     lv_obj_set_style_bg_opa(angry_right, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(angry_right, 0, 0);
     lv_obj_set_style_border_width(angry_right, 0, 0);
 
     // 將旋轉支點設定在方塊正中心
-    lv_obj_set_style_transform_pivot_x(angry_right, 18, 0);
+    lv_obj_set_style_transform_pivot_x(angry_right, 20, 0);
     lv_obj_set_style_transform_pivot_y(angry_right, 10, 0);
 
     lv_obj_set_style_transform_angle(angry_right, -150, 0);  // 順時針 15 度
@@ -6846,10 +6846,6 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
             lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
-        if (left_eye_highlight)
-            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_highlight)
-            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
         lv_obj_set_size(avatar_mouth, 25, 12);
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
@@ -6884,10 +6880,6 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
             lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
-        if (left_eye_highlight)
-            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_highlight)
-            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
         if (avatar_mouth) {
             lv_obj_set_size(avatar_mouth, 20, 20);
@@ -6918,17 +6910,13 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_anim_start(&a);
         }
     } else if (emo_str == "delicious") {
-        set_eye_size(EYE_BASE_W, 10);  // 眼睛瞇起來哭
+        set_eye_size(EYE_BASE_W, 8);  // 眼睛瞇起來哭
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
         if (left_eye_ball)
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
             lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
-        if (left_eye_highlight)
-            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_highlight)
-            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
         lv_obj_set_size(avatar_mouth, MOUTH_BASE_W, 20);  // 嘴巴張大哭
         lv_obj_set_style_radius(avatar_mouth, 8, 0);      // 嘴巴帶點圓角
@@ -6961,10 +6949,6 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
             lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
-        if (left_eye_highlight)
-            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_highlight)
-            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
         lv_obj_set_size(avatar_mouth, MOUTH_BASE_W + 6, MOUTH_BASE_H);  // 扁嘴
         if (avatar_confuse) {
@@ -6996,17 +6980,13 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_remove_flag(avatar_angry_eye, LV_OBJ_FLAG_HIDDEN);
         }
     } else if (emo_str == "embarrassed") {
-        set_eye_size(EYE_BASE_W, 10);
+        set_eye_size(EYE_BASE_W, 8);
         lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
         lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
         if (left_eye_ball)
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
             lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
-        if (left_eye_highlight)
-            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_highlight)
-            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
         lv_obj_set_size(avatar_mouth, 16, 6);
         if (avatar_embrassing) {
@@ -7078,10 +7058,6 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
             lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
-        if (left_eye_highlight)
-            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_highlight)
-            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
         lv_obj_set_size(avatar_mouth, 1, 1);
 
@@ -7099,10 +7075,6 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
             lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
-        if (left_eye_highlight)
-            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_highlight)
-            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
         lv_obj_set_size(avatar_mouth, 1, 1);
         if (avatar_mouth_laugh) {
@@ -7120,12 +7092,6 @@ void CustomApp_SetEmotion(const char* emotion) {
     } else if (emo_str == "cool") {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_size(avatar_mouth, 1, 1);
-        /*
-        if (left_eye_ball)
-            lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_ball)
-            lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
-        */
 
         if (avatar_mouth_happy) {
             lv_obj_remove_flag(avatar_mouth_happy, LV_OBJ_FLAG_HIDDEN);
@@ -7143,10 +7109,7 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
             lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
-        if (left_eye_highlight)
-            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_highlight)
-            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
     } else if (emo_str == "winking") {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
         lv_obj_set_size(avatar_mouth, MOUTH_BASE_W - 4, MOUTH_BASE_H);
@@ -7170,10 +7133,6 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
             lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
-        if (left_eye_highlight)
-            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_highlight)
-            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
         if (avatar_mouth_happy) {
             lv_obj_remove_flag(avatar_mouth_happy, LV_OBJ_FLAG_HIDDEN);
@@ -7184,8 +7143,7 @@ void CustomApp_SetEmotion(const char* emotion) {
         update_eye_size_realtime();
         if (right_eye_ball)
             lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_highlight)
-            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
+
         lv_obj_set_size(avatar_mouth, 12, 12);
         lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 2, MOUTH_POS_H);
         if (avatar_kissy) {
@@ -7193,7 +7151,7 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_remove_flag(avatar_kissy, LV_OBJ_FLAG_HIDDEN);
         }
     } else if (emo_str == "sleepy") {
-        set_eye_size(EYE_BASE_W, EYE_BASE_H / 3);
+        set_eye_size(EYE_BASE_W, 8);
         lv_obj_set_size(avatar_mouth, 18, 20);
         if (avatar_sleepy_z) {
             lv_obj_remove_flag(avatar_sleepy_z, LV_OBJ_FLAG_HIDDEN);
@@ -7202,10 +7160,6 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
             lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
-        if (left_eye_highlight)
-            lv_obj_add_flag(left_eye_highlight, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_highlight)
-            lv_obj_add_flag(right_eye_highlight, LV_OBJ_FLAG_HIDDEN);
 
         // 啟動口水動畫！
         if (avatar_swallow) {
