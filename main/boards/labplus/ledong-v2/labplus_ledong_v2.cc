@@ -123,7 +123,7 @@ public:
         InitializeSpi();
         InitializeJd9853Display();
         InitializeButtons();
-        GetBacklight()->SetBrightness(current_max_brightness);
+        GetBacklight()->SetBrightness(100);
     }
 
     virtual Led* GetLed() override {

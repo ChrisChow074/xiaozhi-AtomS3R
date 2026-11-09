@@ -212,7 +212,7 @@ public:
         InitializeTouch();
         InitializeButtons();
         InitializeTools();
-        GetBacklight()->SetBrightness(current_max_brightness);
+        GetBacklight()->SetBrightness(100);
     }
 
     virtual Led* GetLed() override {

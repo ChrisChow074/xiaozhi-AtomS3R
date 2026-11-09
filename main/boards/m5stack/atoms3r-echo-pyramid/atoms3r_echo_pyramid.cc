@@ -652,7 +652,7 @@ private:
         InitializeSpi();
         InitializeLcdDisplay(DetectLcdPanel());
         InitializeButtons();
-        GetBacklight()->SetBrightness(current_max_brightness);
+        GetBacklight()->SetBrightness(100);
 
         display_->SetupUI();
         display_->SetStatus(Lang::Strings::ERROR);

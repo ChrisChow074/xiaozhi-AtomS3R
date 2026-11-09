@@ -259,7 +259,7 @@ public:
         InitializeDisplay();
         InitializeButtons();
         InitializeTools();
-        GetBacklight()->SetBrightness(current_max_brightness);
+        GetBacklight()->SetBrightness(100);
     }
 
     // 获取音频编解码器

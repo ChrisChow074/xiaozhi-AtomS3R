@@ -264,7 +264,7 @@ public:
         InitializeCustomio();
         InitializeRGB();
         InitializeTouch();
-        GetBacklight()->SetBrightness(current_max_brightness);
+        GetBacklight()->SetBrightness(100);
     }
 
     virtual AudioCodec* GetAudioCodec() override {

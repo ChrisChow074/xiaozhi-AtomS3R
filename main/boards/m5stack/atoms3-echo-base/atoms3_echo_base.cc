@@ -194,7 +194,7 @@ private:
         InitializeSpi();
         InitializeLcdDisplay(DetectLcdPanel());
         InitializeButtons();
-        GetBacklight()->SetBrightness(current_max_brightness);
+        GetBacklight()->SetBrightness(100);
 
         // Ensure UI is set up before displaying error
         display_->SetupUI();
