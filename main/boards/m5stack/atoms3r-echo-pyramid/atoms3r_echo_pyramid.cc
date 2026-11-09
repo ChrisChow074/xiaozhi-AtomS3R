@@ -1,33 +1,32 @@
-#include "wifi_board.h"
-#include "display/lcd_display.h"
 #include "application.h"
+#include "assets/lang_config.h"
+#include "audio_codec.h"
 #include "button.h"
 #include "config.h"
+#include "display/lcd_display.h"
 #include "i2c_device.h"
-#include "audio_codec.h"
 #include "led/led.h"
-#include "assets/lang_config.h"
+#include "wifi_board.h"
 
 #include <driver/gpio.h>
-#include <driver/spi_master.h>
-#include <esp_lcd_panel_vendor.h>
-#include <inttypes.h>
-#include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <driver/i2s_std.h>
+#include <driver/spi_master.h>
 #include <esp_codec_dev.h>
 #include <esp_codec_dev_defaults.h>
+#include <esp_lcd_gc9a01.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
-#include <esp_lcd_gc9a01.h>
+#include <esp_lcd_panel_vendor.h>
+#include <esp_log.h>
+#include <inttypes.h>
 
 #include <mutex>
 
 #define TAG "AtomS3R+EchoPyramid"
 
-
 #define PYRAMID_SI5351_ADDR 0x60
-#define PYRAMID_STM32_ADDR  0x1A
+#define PYRAMID_STM32_ADDR 0x1A
 #define PYRAMID_AW87559_ADDR 0x5B
 #define PYRAMID_POWER_ON_RETRY_COUNT 20
 #define PYRAMID_POWER_ON_RETRY_DELAY_MS 250
@@ -39,36 +38,37 @@
 #define STM32_RGB2_STATUS_REG_ADDR 0x60
 #define STM32_RGB_NUM_MAX 13
 
-#define AW87559_REG_ID      0x00
+#define AW87559_REG_ID 0x00
 #define AW87559_REG_SYSCTRL 0x01
-#define AW87559_REG_PAGR    0x06
-#define AW87559_ID          0x5A
-#define AW87559_SYS_EN_SW_MASK    (1 << 6)
+#define AW87559_REG_PAGR 0x06
+#define AW87559_ID 0x5A
+#define AW87559_SYS_EN_SW_MASK (1 << 6)
 #define AW87559_SYS_EN_BOOST_MASK (1 << 4)
-#define AW87559_SYS_EN_PA_MASK    (1 << 3)
+#define AW87559_SYS_EN_PA_MASK (1 << 3)
 #define AW87559_GAIN_16_5DB 11
 
 class Si5351 : public I2cDevice {
 public:
     Si5351(i2c_master_bus_handle_t i2c_bus, uint8_t addr) : I2cDevice(i2c_bus, addr) {
-        WriteReg(3, 0xFF); // Disable all clock outputs.
+        WriteReg(3, 0xFF);  // Disable all clock outputs.
         WriteReg(16, 0x80);
         WriteReg(17, 0x80);
         WriteReg(18, 0x80);
-        WriteReg(183, 0xC0); // Crystal load capacitance: 10 pF.
+        WriteReg(183, 0xC0);  // Crystal load capacitance: 10 pF.
     }
 
     void SetMclk(uint32_t sample_rate) {
         if (sample_rate == 24000) {
-            SetPll(884736000UL, 144); // 884.736 MHz / 144 = 6.144 MHz
+            SetPll(884736000UL, 144);  // 884.736 MHz / 144 = 6.144 MHz
         } else if (sample_rate == 16000) {
-            SetPll(884736000UL, 216); // 4.096 MHz
+            SetPll(884736000UL, 216);  // 4.096 MHz
         } else if (sample_rate == 44100) {
-            SetPll(903168000UL, 80); // 11.2896 MHz
+            SetPll(903168000UL, 80);  // 11.2896 MHz
         } else if (sample_rate == 48000) {
-            SetPll(884736000UL, 72); // 12.288 MHz
+            SetPll(884736000UL, 72);  // 12.288 MHz
         } else {
-            ESP_LOGW(TAG, "Unsupported Si5351 sample rate: %lu", static_cast<unsigned long>(sample_rate));
+            ESP_LOGW(TAG, "Unsupported Si5351 sample rate: %lu",
+                     static_cast<unsigned long>(sample_rate));
         }
     }
 
@@ -119,14 +119,14 @@ private:
             0x00,
             0x00,
         };
-        WriteRegs(50, ms_buf, sizeof(ms_buf)); // Multisynth1 -> CLK1
+        WriteRegs(50, ms_buf, sizeof(ms_buf));  // Multisynth1 -> CLK1
 
-        WriteReg(17, 0x4F); // CLK1 from PLLA, 8 mA drive.
+        WriteReg(17, 0x4F);  // CLK1 from PLLA, 8 mA drive.
         WriteReg(16, 0x80);
         WriteReg(18, 0x80);
-        WriteReg(177, 0xA0); // Reset PLLA.
+        WriteReg(177, 0xA0);  // Reset PLLA.
         vTaskDelay(pdMS_TO_TICKS(10));
-        WriteReg(3, 0xFD); // Enable CLK1 only.
+        WriteReg(3, 0xFD);  // Enable CLK1 only.
 
         ESP_LOGI(TAG, "Si5351 CLK1 set to %lu Hz", static_cast<unsigned long>(pll_freq / ms_div));
     }
@@ -174,11 +174,13 @@ public:
         if (brightness > 100) {
             brightness = 100;
         }
-        WriteReg(channel == 1 ? STM32_RGB1_BRIGHTNESS_REG_ADDR : STM32_RGB2_BRIGHTNESS_REG_ADDR, brightness);
+        WriteReg(channel == 1 ? STM32_RGB1_BRIGHTNESS_REG_ADDR : STM32_RGB2_BRIGHTNESS_REG_ADDR,
+                 brightness);
     }
 
     void SetAllRgb(uint8_t channel, uint8_t r, uint8_t g, uint8_t b) {
-        const uint8_t base = (channel == 1) ? STM32_RGB1_STATUS_REG_ADDR : STM32_RGB2_STATUS_REG_ADDR;
+        const uint8_t base =
+            (channel == 1) ? STM32_RGB1_STATUS_REG_ADDR : STM32_RGB2_STATUS_REG_ADDR;
 
         // Echo Pyramid STM32 uses 4-byte stride per LED: (B,G,R,0x00).
         // One page is 0x10 bytes and contains 4 LEDs.
@@ -214,14 +216,14 @@ public:
         auto& app = Application::GetInstance();
         switch (app.GetDeviceState()) {
             case kDeviceStateListening:
-                ctrl_->SetStatusColor(0, 64, 0);   // green
+                ctrl_->SetStatusColor(0, 64, 0);  // green
                 break;
             case kDeviceStateSpeaking:
             case kDeviceStateNotifying:
-                ctrl_->SetStatusColor(64, 0, 0);   // red
+                ctrl_->SetStatusColor(64, 0, 0);  // red
                 break;
             default:
-                ctrl_->SetStatusColor(0, 0, 64);   // blue
+                ctrl_->SetStatusColor(0, 0, 64);  // blue
                 break;
         }
     }
@@ -233,9 +235,10 @@ private:
 class Lp5562 : public I2cDevice {
 public:
     Lp5562(i2c_master_bus_handle_t i2c_bus, uint8_t addr) : I2cDevice(i2c_bus, addr) {
-        WriteReg(0x00, 0B01000000); // Set chip_en to 1
-        WriteReg(0x08, 0B00000001); // Enable internal clock
-        WriteReg(0x70, 0B00000000); // Configure all LED outputs to be controlled from I2C registers
+        WriteReg(0x00, 0B01000000);  // Set chip_en to 1
+        WriteReg(0x08, 0B00000001);  // Enable internal clock
+        WriteReg(0x70,
+                 0B00000000);  // Configure all LED outputs to be controlled from I2C registers
 
         // PWM clock frequency 558 Hz
         auto data = ReadReg(0x08);
@@ -268,9 +271,10 @@ private:
 
 class PyramidAudioCodec : public AudioCodec {
 public:
-    PyramidAudioCodec(void* i2c_master_handle, i2c_port_t i2c_port, int input_sample_rate, int output_sample_rate,
-        gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din,
-        gpio_num_t pa_pin, uint8_t es8311_addr, uint8_t es7210_addr, bool input_reference) {
+    PyramidAudioCodec(void* i2c_master_handle, i2c_port_t i2c_port, int input_sample_rate,
+                      int output_sample_rate, gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws,
+                      gpio_num_t dout, gpio_num_t din, gpio_num_t pa_pin, uint8_t es8311_addr,
+                      uint8_t es7210_addr, bool input_reference) {
         duplex_ = true;
         input_reference_ = input_reference;
         input_channels_ = input_reference_ ? 2 : 1;
@@ -381,7 +385,8 @@ public:
                 fs.channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
             }
             ESP_ERROR_CHECK(esp_codec_dev_open(input_dev_, &fs));
-            ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0), input_gain_));
+            ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(
+                input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0), input_gain_));
         } else {
             ESP_ERROR_CHECK(esp_codec_dev_close(input_dev_));
         }
@@ -421,7 +426,8 @@ private:
     gpio_num_t pa_pin_ = GPIO_NUM_NC;
     std::mutex data_if_mutex_;
 
-    void CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din) {
+    void CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout,
+                              gpio_num_t din) {
         assert(input_sample_rate_ == output_sample_rate_);
 
         i2s_chan_config_t chan_cfg = {
@@ -436,40 +442,44 @@ private:
         ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_handle_, &rx_handle_));
 
         i2s_std_config_t std_cfg = {
-            .clk_cfg = {
-                .sample_rate_hz = static_cast<uint32_t>(output_sample_rate_),
-                .clk_src = I2S_CLK_SRC_DEFAULT,
+            .clk_cfg =
+                {
+                    .sample_rate_hz = static_cast<uint32_t>(output_sample_rate_),
+                    .clk_src = I2S_CLK_SRC_DEFAULT,
 #if SOC_I2S_HW_VERSION_2
-                .ext_clk_freq_hz = 0,
+                    .ext_clk_freq_hz = 0,
 #endif
-                .mclk_multiple = I2S_MCLK_MULTIPLE_256,
-            },
-            .slot_cfg = {
-                .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
-                .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
-                .slot_mode = I2S_SLOT_MODE_STEREO,
-                .slot_mask = I2S_STD_SLOT_BOTH,
-                .ws_width = I2S_DATA_BIT_WIDTH_16BIT,
-                .ws_pol = false,
-                .bit_shift = true,
-#if SOC_I2S_HW_VERSION_2
-                .left_align = true,
-                .big_endian = false,
-                .bit_order_lsb = false,
-#endif
-            },
-            .gpio_cfg = {
-                .mclk = mclk,
-                .bclk = bclk,
-                .ws = ws,
-                .dout = dout,
-                .din = din,
-                .invert_flags = {
-                    .mclk_inv = false,
-                    .bclk_inv = false,
-                    .ws_inv = false,
+                    .mclk_multiple = I2S_MCLK_MULTIPLE_256,
                 },
-            },
+            .slot_cfg =
+                {
+                    .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
+                    .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
+                    .slot_mode = I2S_SLOT_MODE_STEREO,
+                    .slot_mask = I2S_STD_SLOT_BOTH,
+                    .ws_width = I2S_DATA_BIT_WIDTH_16BIT,
+                    .ws_pol = false,
+                    .bit_shift = true,
+#if SOC_I2S_HW_VERSION_2
+                    .left_align = true,
+                    .big_endian = false,
+                    .bit_order_lsb = false,
+#endif
+                },
+            .gpio_cfg =
+                {
+                    .mclk = mclk,
+                    .bclk = bclk,
+                    .ws = ws,
+                    .dout = dout,
+                    .din = din,
+                    .invert_flags =
+                        {
+                            .mclk_inv = false,
+                            .bclk_inv = false,
+                            .ws_inv = false,
+                        },
+                },
         };
 
         ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle_, &std_cfg));
@@ -481,14 +491,16 @@ private:
 
     int Read(int16_t* dest, int samples) override {
         if (input_enabled_) {
-            ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(input_dev_, reinterpret_cast<void*>(dest), samples * sizeof(int16_t)));
+            ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(
+                input_dev_, reinterpret_cast<void*>(dest), samples * sizeof(int16_t)));
         }
         return samples;
     }
 
     int Write(const int16_t* data, int samples) override {
         if (output_enabled_) {
-            ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, const_cast<int16_t*>(data), samples * sizeof(int16_t)));
+            ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(
+                output_dev_, const_cast<int16_t*>(data), samples * sizeof(int16_t)));
         }
         return samples;
     }
@@ -514,13 +526,13 @@ static const gc9a01_lcd_init_cmd_t gc9107_lcd_init_cmds[] = {
     {0xc6, (uint8_t[]){0x30}, 1, 0},
     {0xc7, (uint8_t[]){0x18}, 1, 0},
     {0xf0,
-    (uint8_t[]){0x1f, 0x28, 0x04, 0x3e, 0x2a, 0x2e, 0x20, 0x00, 0x0c, 0x06,
-                0x00, 0x1c, 0x1f, 0x0f},
-    14, 0},
+     (uint8_t[]){0x1f, 0x28, 0x04, 0x3e, 0x2a, 0x2e, 0x20, 0x00, 0x0c, 0x06, 0x00, 0x1c, 0x1f,
+                 0x0f},
+     14, 0},
     {0xf1,
-    (uint8_t[]){0x00, 0x2d, 0x2f, 0x3c, 0x6f, 0x1c, 0x0b, 0x00, 0x00, 0x00,
-                0x07, 0x0d, 0x11, 0x0f},
-    14, 0},
+     (uint8_t[]){0x00, 0x2d, 0x2f, 0x3c, 0x6f, 0x1c, 0x0b, 0x00, 0x00, 0x00, 0x07, 0x0d, 0x11,
+                 0x0f},
+     14, 0},
 };
 
 class AtomS3rEchoPyramidBoard : public WifiBoard {
@@ -561,9 +573,10 @@ private:
             .glitch_ignore_cnt = 7,
             .intr_priority = 0,
             .trans_queue_depth = 0,
-            .flags = {
-                .enable_internal_pullup = 1,
-            },
+            .flags =
+                {
+                    .enable_internal_pullup = 1,
+                },
         };
         ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_));
 
@@ -624,8 +637,8 @@ private:
                 return;
             }
 
-            ESP_LOGW(TAG, "Echo Pyramid not ready, retrying (%d/%d)",
-                attempt + 1, PYRAMID_POWER_ON_RETRY_COUNT);
+            ESP_LOGW(TAG, "Echo Pyramid not ready, retrying (%d/%d)", attempt + 1,
+                     PYRAMID_POWER_ON_RETRY_COUNT);
             vTaskDelay(pdMS_TO_TICKS(PYRAMID_POWER_ON_RETRY_DELAY_MS));
         }
     }
@@ -639,7 +652,7 @@ private:
         InitializeSpi();
         InitializeLcdDisplay(DetectLcdPanel());
         InitializeButtons();
-        GetBacklight()->SetBrightness(100);
+        GetBacklight()->SetBrightness(current_max_brightness);
 
         display_->SetupUI();
         display_->SetStatus(Lang::Strings::ERROR);
@@ -734,7 +747,7 @@ private:
         ret = spi_device_polling_transmit(spi, &wake);
 
         spi_transaction_t trans = {};
-        trans.cmd = 0x04; // RDDID
+        trans.cmd = 0x04;  // RDDID
         trans.rxlength = 32;
         trans.flags = SPI_TRANS_USE_RXDATA;
         gpio_set_level(LCD_CS_GPIO, 0);
@@ -836,8 +849,8 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_handle, config.gap_x, config.gap_y));
         ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
 
-        display_ = new SpiLcdDisplay(io_handle, panel_handle,
-                                    DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0, config.mirror_x, config.mirror_y, config.swap_xy);
+        display_ = new SpiLcdDisplay(io_handle, panel_handle, DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0,
+                                     config.mirror_x, config.mirror_y, config.swap_xy);
     }
 
     void InitializeButtons() {
@@ -864,31 +877,18 @@ public:
         GetBacklight()->RestoreBrightness();
     }
 
-    virtual Led* GetLed() override {
-        return &led_;
-    }
+    virtual Led* GetLed() override { return &led_; }
 
     virtual AudioCodec* GetAudioCodec() override {
         static PyramidAudioCodec audio_codec(
-            i2c_bus_,
-            I2C_NUM_1,
-            AUDIO_INPUT_SAMPLE_RATE,
-            AUDIO_OUTPUT_SAMPLE_RATE,
-            AUDIO_I2S_GPIO_MCLK,
-            AUDIO_I2S_GPIO_BCLK,
-            AUDIO_I2S_GPIO_WS,
-            AUDIO_I2S_GPIO_DOUT,
-            AUDIO_I2S_GPIO_DIN,
-            AUDIO_CODEC_GPIO_PA,
-            AUDIO_CODEC_ES8311_ADDR,
-            AUDIO_CODEC_ES7210_ADDR,
-            AUDIO_INPUT_REFERENCE);
+            i2c_bus_, I2C_NUM_1, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
+            AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT,
+            AUDIO_I2S_GPIO_DIN, AUDIO_CODEC_GPIO_PA, AUDIO_CODEC_ES8311_ADDR,
+            AUDIO_CODEC_ES7210_ADDR, AUDIO_INPUT_REFERENCE);
         return &audio_codec;
     }
 
-    virtual Display* GetDisplay() override {
-        return display_;
-    }
+    virtual Display* GetDisplay() override { return display_; }
 
     virtual Backlight* GetBacklight() override {
         static CustomBacklight backlight(lp5562_);

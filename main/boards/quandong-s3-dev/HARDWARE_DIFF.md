@@ -124,7 +124,7 @@ InitializeSpi()             // SPI2 for ILI9341
 InitializeAudioPaEnable()   // GPIO1 拉低使能功放
 InitializeIli9341Display()  // 自定义 init cmds + 实例化 SpiLcdDisplay
 InitializeButtons()         // BOOT 单键
-GetBacklight()->SetBrightness(100)
+GetBacklight()->SetBrightness(current_max_brightness)
 ```
 
 ### bread-compact-wifi 构造序列

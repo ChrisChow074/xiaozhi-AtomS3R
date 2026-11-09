@@ -255,7 +255,7 @@ public:
         InitializeDisplay();
         InitializeButtons();
         InitializeTools();
-        GetBacklight()->SetBrightness(100);
+        GetBacklight()->SetBrightness(current_max_brightness);
     }
 
     virtual AudioCodec* GetAudioCodec() override {

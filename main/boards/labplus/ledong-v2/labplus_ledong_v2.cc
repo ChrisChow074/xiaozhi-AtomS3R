@@ -1,16 +1,16 @@
-#include "wifi_board.h"
-#include "codecs/es8388_audio_codec.h"
-#include "display/lcd_display.h"
 #include "application.h"
 #include "button.h"
+#include "codecs/es8388_audio_codec.h"
 #include "config.h"
+#include "display/lcd_display.h"
 #include "i2c_device.h"
 #include "led/single_led.h"
+#include "wifi_board.h"
 
-#include <esp_log.h>
-#include <esp_lcd_panel_vendor.h>
 #include <driver/i2c_master.h>
 #include <driver/spi_common.h>
+#include <esp_lcd_panel_vendor.h>
+#include <esp_log.h>
 
 #define TAG "labplus_ledong_v2"
 
@@ -33,9 +33,10 @@ private:
             .glitch_ignore_cnt = 7,
             .intr_priority = 0,
             .trans_queue_depth = 0,
-            .flags = {
-                .enable_internal_pullup = 1,
-            },
+            .flags =
+                {
+                    .enable_internal_pullup = 1,
+                },
         };
         ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_));
     }
@@ -60,12 +61,8 @@ private:
                 return;
             }
         });
-        boot_button_.OnPressDown([this]() {
-            Application::GetInstance().StartListening();
-        });
-        boot_button_.OnPressUp([this]() {
-            Application::GetInstance().StopListening();
-        });
+        boot_button_.OnPressDown([this]() { Application::GetInstance().StartListening(); });
+        boot_button_.OnPressUp([this]() { Application::GetInstance().StopListening(); });
     }
 
     void InitializeJd9853Display() {
@@ -92,7 +89,7 @@ private:
         panel_config.data_endian = LCD_RGB_DATA_ENDIAN_BIG,
         esp_lcd_new_panel_st7789(panel_io, &panel_config, &panel);
 
-    #if CONFIG_BOARD_TYPE_LABPLUS_LEDONG_V2
+#if CONFIG_BOARD_TYPE_LABPLUS_LEDONG_V2
         ESP_LOGI(TAG, "Reset LCD.");
         i2c_device_config_t dev_cfg = {
             .dev_addr_length = I2C_ADDR_BIT_LEN_7,
@@ -105,18 +102,19 @@ private:
 
         uint8_t reg = BOARD_STM8_CMD;
         i2c_master_transmit(dev_handle, &reg, 1, -1);
-        
+
         i2c_master_bus_rm_device(dev_handle);
-    #endif 
+#endif
 
         esp_lcd_panel_reset(panel);
         vTaskDelay(pdMS_TO_TICKS(100));
         esp_lcd_panel_init(panel);
         esp_lcd_panel_invert_color(panel, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
-        esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY); 
+        esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
         esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
-        display_ = new SpiLcdDisplay(panel_io, panel,
-                                    DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        display_ = new SpiLcdDisplay(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                     DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X,
+                                     DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
 public:
@@ -125,7 +123,7 @@ public:
         InitializeSpi();
         InitializeJd9853Display();
         InitializeButtons();
-        GetBacklight()->SetBrightness(100);
+        GetBacklight()->SetBrightness(current_max_brightness);
     }
 
     virtual Led* GetLed() override {
@@ -135,24 +133,13 @@ public:
 
     virtual AudioCodec* GetAudioCodec() override {
         static Es8388AudioCodec audio_codec(
-            i2c_bus_, 
-            I2C_NUM_0, 
-            AUDIO_INPUT_SAMPLE_RATE, 
-            AUDIO_OUTPUT_SAMPLE_RATE,
-            AUDIO_I2S_GPIO_MCLK, 
-            AUDIO_I2S_GPIO_BCLK, 
-            AUDIO_I2S_GPIO_WS, 
-            AUDIO_I2S_GPIO_DOUT, 
-            AUDIO_I2S_GPIO_DIN,
-            GPIO_NUM_NC, 
-            AUDIO_CODEC_ES8388_ADDR
-        );
+            i2c_bus_, I2C_NUM_0, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
+            AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT,
+            AUDIO_I2S_GPIO_DIN, GPIO_NUM_NC, AUDIO_CODEC_ES8388_ADDR);
         return &audio_codec;
     }
 
-    virtual Display* GetDisplay() override {
-        return display_;
-    }
+    virtual Display* GetDisplay() override { return display_; }
 
     virtual Backlight* GetBacklight() override {
         static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);

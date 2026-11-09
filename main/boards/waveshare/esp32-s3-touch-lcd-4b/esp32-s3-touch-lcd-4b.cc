@@ -1,21 +1,21 @@
-#include "wifi_board.h"
 #include "display/lcd_display.h"
 #include "esp_lcd_st7701.h"
+#include "wifi_board.h"
 
-#include "codecs/box_audio_codec.h"
 #include "application.h"
+#include "axp2101.h"
 #include "button.h"
+#include "codecs/box_audio_codec.h"
+#include "config.h"
+#include "i2c_device.h"
 #include "led/single_led.h"
 #include "mcp_server.h"
-#include "config.h"
 #include "power_save_timer.h"
-#include "axp2101.h"
-#include "i2c_device.h"
 
-#include <esp_log.h>
-#include <esp_lcd_panel_vendor.h>
 #include <driver/i2c_master.h>
 #include <driver/spi_master.h>
+#include <esp_lcd_panel_vendor.h>
+#include <esp_log.h>
 #include "esp_io_expander_tca9554.h"
 #include "settings.h"
 
@@ -24,8 +24,8 @@
 #include <lvgl.h>
 
 #include <esp_lcd_panel_io.h>
-#include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_io_additions.h>
+#include <esp_lcd_panel_ops.h>
 #include <esp_ota_ops.h>
 
 #define TAG "WaveshareEsp32s3TouchLCD4b"
@@ -33,8 +33,8 @@
 class Pmic : public Axp2101 {
 public:
     Pmic(i2c_master_bus_handle_t i2c_bus, uint8_t addr) : Axp2101(i2c_bus, addr) {
-        WriteReg(0x22, 0b110); // PWRON > OFFLEVEL as POWEROFF Source enable
-        WriteReg(0x27, 0x10);  // hold 4s to power off
+        WriteReg(0x22, 0b110);  // PWRON > OFFLEVEL as POWEROFF Source enable
+        WriteReg(0x27, 0x10);   // hold 4s to power off
 
         // Disable All DCs but DC1
         WriteReg(0x80, 0x01);
@@ -51,11 +51,12 @@ public:
         // Enable ALDO1(MIC)
         WriteReg(0x90, 0x01);
 
-        WriteReg(0x64, 0x02); // CV charger voltage setting to 4.1V
+        WriteReg(0x64, 0x02);  // CV charger voltage setting to 4.1V
 
-        WriteReg(0x61, 0x02); // set Main battery precharge current to 50mA
-        WriteReg(0x62, 0x08); // set Main battery charger current to 400mA ( 0x08-200mA, 0x09-300mA, 0x0A-400mA )
-        WriteReg(0x63, 0x01); // set Main battery term charge current to 25mA
+        WriteReg(0x61, 0x02);  // set Main battery precharge current to 50mA
+        WriteReg(0x62, 0x08);  // set Main battery charger current to 400mA ( 0x08-200mA,
+                               // 0x09-300mA, 0x0A-400mA )
+        WriteReg(0x63, 0x01);  // set Main battery term charge current to 25mA
     }
 };
 
@@ -64,15 +65,21 @@ public:
 #define LCD_OPCODE_WRITE_COLOR (0x32ULL)
 
 static const st7701_lcd_init_cmd_t lcd_init_cmds[] = {
-//  {cmd, { data }, data_size, delay_ms}
+    //  {cmd, { data }, data_size, delay_ms}
     {0x11, (uint8_t[]){0x00}, 0, 120},
     {0xFF, (uint8_t[]){0x77, 0x01, 0x00, 0x00, 0x10}, 5, 0},
     {0xC0, (uint8_t[]){0x3B, 0x00}, 2, 0},
     {0xC1, (uint8_t[]){0x0D, 0x02}, 2, 0},
     {0xC2, (uint8_t[]){0x21, 0x08}, 2, 0},
     {0xCD, (uint8_t[]){0x08}, 1, 0},
-    {0xB0, (uint8_t[]){0x00, 0x11, 0x18, 0x0E, 0x11, 0x06, 0x07, 0x08, 0x07, 0x22, 0x04, 0x12, 0x0F, 0xAA, 0x31, 0x18}, 16, 0},
-    {0xB1, (uint8_t[]){0x00, 0x11, 0x19, 0x0E, 0x12, 0x07, 0x08, 0x08, 0x08, 0x22, 0x04, 0x11, 0x11, 0xA9, 0x32, 0x18}, 16, 0},
+    {0xB0,
+     (uint8_t[]){0x00, 0x11, 0x18, 0x0E, 0x11, 0x06, 0x07, 0x08, 0x07, 0x22, 0x04, 0x12, 0x0F, 0xAA,
+                 0x31, 0x18},
+     16, 0},
+    {0xB1,
+     (uint8_t[]){0x00, 0x11, 0x19, 0x0E, 0x12, 0x07, 0x08, 0x08, 0x08, 0x22, 0x04, 0x11, 0x11, 0xA9,
+                 0x32, 0x18},
+     16, 0},
     {0xFF, (uint8_t[]){0x77, 0x01, 0x00, 0x00, 0x11}, 5, 0},
     {0xB0, (uint8_t[]){0x60}, 1, 0},
     {0xB1, (uint8_t[]){0x30}, 1, 0},
@@ -85,16 +92,26 @@ static const st7701_lcd_init_cmd_t lcd_init_cmds[] = {
     {0xC2, (uint8_t[]){0x78}, 1, 20},
     {0xE0, (uint8_t[]){0x00, 0x1B, 0x02}, 3, 0},
     {0xE1, (uint8_t[]){0x08, 0xA0, 0x00, 0x00, 0x07, 0xA0, 0x00, 0x00, 0x00, 0x44, 0x44}, 11, 0},
-    {0xE2, (uint8_t[]){0x11, 0x11, 0x44, 0x44, 0xED, 0xA0, 0x00, 0x00, 0xEC, 0xA0, 0x00, 0x00}, 12, 0},
+    {0xE2, (uint8_t[]){0x11, 0x11, 0x44, 0x44, 0xED, 0xA0, 0x00, 0x00, 0xEC, 0xA0, 0x00, 0x00}, 12,
+     0},
     {0xE3, (uint8_t[]){0x00, 0x00, 0x11, 0x11}, 4, 0},
     {0xE4, (uint8_t[]){0x44, 0x44}, 2, 0},
-    {0xE5, (uint8_t[]){0x0A, 0xE9, 0xD8, 0xA0, 0x0C, 0xEB, 0xD8, 0xA0, 0x0E, 0xED, 0xD8, 0xA0, 0x10, 0xEF, 0xD8, 0xA0}, 16, 0},
+    {0xE5,
+     (uint8_t[]){0x0A, 0xE9, 0xD8, 0xA0, 0x0C, 0xEB, 0xD8, 0xA0, 0x0E, 0xED, 0xD8, 0xA0, 0x10, 0xEF,
+                 0xD8, 0xA0},
+     16, 0},
     {0xE6, (uint8_t[]){0x00, 0x00, 0x11, 0x11}, 4, 0},
     {0xE7, (uint8_t[]){0x44, 0x44}, 2, 0},
-    {0xE8, (uint8_t[]){0x09, 0xE8, 0xD8, 0xA0, 0x0B, 0xEA, 0xD8, 0xA0, 0x0D, 0xEC, 0xD8, 0xA0, 0x0F, 0xEE, 0xD8, 0xA0}, 16, 0},
+    {0xE8,
+     (uint8_t[]){0x09, 0xE8, 0xD8, 0xA0, 0x0B, 0xEA, 0xD8, 0xA0, 0x0D, 0xEC, 0xD8, 0xA0, 0x0F, 0xEE,
+                 0xD8, 0xA0},
+     16, 0},
     {0xEB, (uint8_t[]){0x02, 0x00, 0xE4, 0xE4, 0x88, 0x00, 0x40}, 7, 0},
     {0xEC, (uint8_t[]){0x3C, 0x00}, 2, 0},
-    {0xED, (uint8_t[]){0xAB, 0x89, 0x76, 0x54, 0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x20, 0x45, 0x67, 0x98, 0xBA}, 16, 0},
+    {0xED,
+     (uint8_t[]){0xAB, 0x89, 0x76, 0x54, 0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x20, 0x45, 0x67,
+                 0x98, 0xBA},
+     16, 0},
     {0xFF, (uint8_t[]){0x77, 0x01, 0x00, 0x00, 0x00}, 5, 0},
     {0x36, (uint8_t[]){0x00}, 1, 0},
     {0x3A, (uint8_t[]){0x66}, 1, 0},
@@ -119,12 +136,13 @@ private:
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
         power_save_timer_->OnEnterSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(true);
-            GetBacklight()->SetBrightness(70); });
+            GetBacklight()->SetBrightness(70);
+        });
         power_save_timer_->OnExitSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(false);
-            GetBacklight()->RestoreBrightness(); });
-        power_save_timer_->OnShutdownRequest([this](){ 
-            pmic_->PowerOff(); });
+            GetBacklight()->RestoreBrightness();
+        });
+        power_save_timer_->OnShutdownRequest([this]() { pmic_->PowerOff(); });
         power_save_timer_->SetEnabled(true);
     }
 
@@ -137,16 +155,19 @@ private:
             .clk_source = I2C_CLK_SRC_DEFAULT,
             .glitch_ignore_cnt = 7,
             .trans_queue_depth = 0,
-            .flags = {
-                .enable_internal_pullup = 1,
-            },
+            .flags =
+                {
+                    .enable_internal_pullup = 1,
+                },
         };
         ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_));
     }
 
     void InitializeTca9554(void) {
         esp_io_expander_new_i2c_tca9554(i2c_bus_, I2C_ADDRESS, &io_expander);
-        esp_io_expander_set_dir(io_expander, IO_EXPANDER_PIN_NUM_3|IO_EXPANDER_PIN_NUM_5 | IO_EXPANDER_PIN_NUM_6 , IO_EXPANDER_OUTPUT);
+        esp_io_expander_set_dir(
+            io_expander, IO_EXPANDER_PIN_NUM_3 | IO_EXPANDER_PIN_NUM_5 | IO_EXPANDER_PIN_NUM_6,
+            IO_EXPANDER_OUTPUT);
         esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_3, 1);
         esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_6, 0);
         vTaskDelay(pdMS_TO_TICKS(200));
@@ -154,7 +175,8 @@ private:
         vTaskDelay(pdMS_TO_TICKS(200));
         esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_5, 1);
         vTaskDelay(pdMS_TO_TICKS(200));
-        esp_io_expander_set_dir(io_expander, IO_EXPANDER_PIN_NUM_4|IO_EXPANDER_PIN_NUM_6, IO_EXPANDER_INPUT);
+        esp_io_expander_set_dir(io_expander, IO_EXPANDER_PIN_NUM_4 | IO_EXPANDER_PIN_NUM_6,
+                                IO_EXPANDER_INPUT);
     }
     void InitializeAxp2101() {
         ESP_LOGI(TAG, "Init AXP2101");
@@ -173,25 +195,22 @@ private:
             .sda_expander_pin = BSP_LCD_IO_SPI_SDA,
             .io_expander = io_expander,
         };
-        esp_lcd_panel_io_3wire_spi_config_t io_config = ST7701_PANEL_IO_3WIRE_SPI_CONFIG(line_config, 0);
+        esp_lcd_panel_io_3wire_spi_config_t io_config =
+            ST7701_PANEL_IO_3WIRE_SPI_CONFIG(line_config, 0);
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_3wire_spi(&io_config, &panel_io));
         esp_lcd_panel_handle_t panel_handle = NULL;
         esp_lcd_rgb_panel_config_t rgb_config = {
             .clk_src = LCD_CLK_SRC_DEFAULT,
-            .timings = {
-                .pclk_hz = 16 * 1000 * 1000,
-                .h_res = DISPLAY_WIDTH,
-                .v_res = DISPLAY_HEIGHT,
-                .hsync_pulse_width = 10,
-                .hsync_back_porch = 10,
-                .hsync_front_porch = 20,
-                .vsync_pulse_width = 10,
-                .vsync_back_porch = 10,
-                .vsync_front_porch = 10,
-                .flags = {
-                    .pclk_active_neg = false
-                }
-            },
+            .timings = {.pclk_hz = 16 * 1000 * 1000,
+                        .h_res = DISPLAY_WIDTH,
+                        .v_res = DISPLAY_HEIGHT,
+                        .hsync_pulse_width = 10,
+                        .hsync_back_porch = 10,
+                        .hsync_front_porch = 20,
+                        .vsync_pulse_width = 10,
+                        .vsync_back_porch = 10,
+                        .vsync_front_porch = 10,
+                        .flags = {.pclk_active_neg = false}},
             .data_width = 16,
             .in_color_format = LCD_COLOR_FMT_RGB565,
             .out_color_format = LCD_COLOR_FMT_RGB565,
@@ -203,15 +222,14 @@ private:
             .de_gpio_num = BSP_LCD_DE,
             .pclk_gpio_num = BSP_LCD_PCLK,
             .disp_gpio_num = BSP_LCD_DISP,
-            .data_gpio_nums = {
-                BSP_LCD_DATA0, BSP_LCD_DATA1, BSP_LCD_DATA2, BSP_LCD_DATA3,
-                BSP_LCD_DATA4, BSP_LCD_DATA5, BSP_LCD_DATA6, BSP_LCD_DATA7,
-                BSP_LCD_DATA8, BSP_LCD_DATA9, BSP_LCD_DATA10, BSP_LCD_DATA11,
-                BSP_LCD_DATA12, BSP_LCD_DATA13, BSP_LCD_DATA14, BSP_LCD_DATA15
-            },
-            .flags = {
-                .fb_in_psram = 1,
-            },
+            .data_gpio_nums = {BSP_LCD_DATA0, BSP_LCD_DATA1, BSP_LCD_DATA2, BSP_LCD_DATA3,
+                               BSP_LCD_DATA4, BSP_LCD_DATA5, BSP_LCD_DATA6, BSP_LCD_DATA7,
+                               BSP_LCD_DATA8, BSP_LCD_DATA9, BSP_LCD_DATA10, BSP_LCD_DATA11,
+                               BSP_LCD_DATA12, BSP_LCD_DATA13, BSP_LCD_DATA14, BSP_LCD_DATA15},
+            .flags =
+                {
+                    .fb_in_psram = 1,
+                },
         };
 
         rgb_config.timings.h_res = DISPLAY_WIDTH;
@@ -223,8 +241,7 @@ private:
             .flags = {
                 .mirror_by_cmd = 0,
                 .auto_del_panel_io = 1,
-            }
-        };
+            }};
         esp_lcd_panel_dev_config_t panel_config = {};
         panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
         panel_config.bits_per_pixel = 18;
@@ -233,9 +250,9 @@ private:
         ESP_ERROR_CHECK(esp_lcd_new_panel_st7701(panel_io, &panel_config, &panel_handle));
         esp_lcd_panel_init(panel_handle);
 
-        display_ = new RgbLcdDisplay(panel_io, panel_handle,
-                                  DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X,
-                                  DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        display_ = new RgbLcdDisplay(panel_io, panel_handle, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                     DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X,
+                                     DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
     void InitializeButtons() {
@@ -265,28 +282,28 @@ private:
             .y_max = DISPLAY_HEIGHT - 1,
             .rst_gpio_num = GPIO_NUM_NC,
             .int_gpio_num = GPIO_NUM_NC,
-            .levels = {
-                .reset = 0,
-                .interrupt = 0,
-            },
-            .flags = {
-                .swap_xy = 0,
-                .mirror_x = 0,
-                .mirror_y = 0,
-            },
+            .levels =
+                {
+                    .reset = 0,
+                    .interrupt = 0,
+                },
+            .flags =
+                {
+                    .swap_xy = 0,
+                    .mirror_x = 0,
+                    .mirror_y = 0,
+                },
         };
         esp_lcd_panel_io_handle_t tp_io_handle = NULL;
         esp_lcd_panel_io_i2c_config_t tp_io_config = {
-            .dev_addr = ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS, 
+            .dev_addr = ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS,
             .control_phase_bytes = 1,
             .dc_bit_offset = 0,
-            .lcd_cmd_bits = 16,                            
-            .flags =
-            {
+            .lcd_cmd_bits = 16,
+            .flags = {
                 .disable_control_phase = 1,
-            }
-	    };
-        tp_io_config.scl_speed_hz = 400*  1000;
+            }};
+        tp_io_config.scl_speed_hz = 400 * 1000;
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_bus_, &tp_io_config, &tp_io_handle));
         ESP_LOGI(TAG, "Initialize touch controller");
         ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_gt911(tp_io_handle, &tp_cfg, &tp));
@@ -299,20 +316,22 @@ private:
     }
 
     void InitializeTools() {
-        auto &mcp_server = McpServer::GetInstance();
+        auto& mcp_server = McpServer::GetInstance();
         mcp_server.AddTool("self.system.reconfigure_wifi",
-            "End this conversation and enter WiFi configuration mode.\n"
-            "**CAUTION** You must ask the user to confirm this action.",
-            PropertyList(), [this](const PropertyList& properties) {
-                EnterWifiConfigMode();
-                return true;
-            });
+                           "End this conversation and enter WiFi configuration mode.\n"
+                           "**CAUTION** You must ask the user to confirm this action.",
+                           PropertyList(), [this](const PropertyList& properties) {
+                               EnterWifiConfigMode();
+                               return true;
+                           });
     }
     void CheckKeyState() {
-        if (!io_expander) return;
+        if (!io_expander)
+            return;
 
         uint32_t current_level;
-        esp_err_t ret = esp_io_expander_get_level(io_expander, IO_EXPANDER_PIN_NUM_4, &current_level);
+        esp_err_t ret =
+            esp_io_expander_get_level(io_expander, IO_EXPANDER_PIN_NUM_4, &current_level);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to read IO_EXPANDER_PIN_NUM_4 level");
             return;
@@ -323,7 +342,7 @@ private:
 
         if (current_level != last_level) {
             last_level = current_level;
-            
+
             if (current_level > 0) {
                 press_start_time_ms = esp_timer_get_time() / 1000;
                 ESP_LOGD(TAG, "Button pressed, start time recorded");
@@ -335,10 +354,7 @@ private:
                     ESP_LOGI(TAG, "Short press detected, switching to factory partition");
 
                     const esp_partition_t* factory_partition = esp_partition_find_first(
-                        ESP_PARTITION_TYPE_APP,
-                        ESP_PARTITION_SUBTYPE_APP_FACTORY,
-                        nullptr
-                    );
+                        ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
                     if (factory_partition) {
                         ESP_LOGI(TAG, "Found factory partition: %s", factory_partition->label);
                         ESP_ERROR_CHECK(esp_ota_set_boot_partition(factory_partition));
@@ -366,13 +382,7 @@ private:
                     vTaskDelay(pdMS_TO_TICKS(20));
                 }
             },
-            "key_monitor_task",
-            4096,
-            this,
-            5,
-            nullptr,
-            0
-        );
+            "key_monitor_task", 4096, this, 5, nullptr, 0);
     }
 
 public:
@@ -386,41 +396,30 @@ public:
         InitializeButtons();
         InitializeTools();
         InitializeKeyMonitor();  // 启动按键监听
-        GetBacklight()->SetBrightness(100);
+        GetBacklight()->SetBrightness(current_max_brightness);
     }
 
     virtual AudioCodec* GetAudioCodec() override {
         static BoxAudioCodec audio_codec(
-            i2c_bus_, 
-            AUDIO_INPUT_SAMPLE_RATE, 
-            AUDIO_OUTPUT_SAMPLE_RATE,
-            AUDIO_I2S_GPIO_MCLK, 
-            AUDIO_I2S_GPIO_BCLK, 
-            AUDIO_I2S_GPIO_WS, 
-            AUDIO_I2S_GPIO_DOUT, 
-            AUDIO_I2S_GPIO_DIN,
-            AUDIO_CODEC_PA_PIN, 
-            AUDIO_CODEC_ES8311_ADDR, 
-            AUDIO_CODEC_ES7210_ADDR, 
+            i2c_bus_, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE, AUDIO_I2S_GPIO_MCLK,
+            AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT, AUDIO_I2S_GPIO_DIN,
+            AUDIO_CODEC_PA_PIN, AUDIO_CODEC_ES8311_ADDR, AUDIO_CODEC_ES7210_ADDR,
             AUDIO_INPUT_REFERENCE);
         return &audio_codec;
     }
 
-    virtual Display* GetDisplay() override {
-        return display_;
-    }
+    virtual Display* GetDisplay() override { return display_; }
 
     virtual Backlight* GetBacklight() override {
         static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
         return &backlight;
     }
 
-    virtual bool GetBatteryLevel(int &level, bool &charging, bool &discharging) override {
+    virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
         static bool last_discharging = false;
         charging = pmic_->IsCharging();
         discharging = pmic_->IsDischarging();
-        if (discharging != last_discharging)
-        {
+        if (discharging != last_discharging) {
             power_save_timer_->SetEnabled(discharging);
             last_discharging = discharging;
         }

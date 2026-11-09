@@ -13,12 +13,15 @@
 #include "driver/gpio.h"
 #undef CONFIG_TOUCH_SUPPRESS_DEPRECATE_WARN
 #define CONFIG_TOUCH_SUPPRESS_DEPRECATE_WARN 1
+#include "audio_codec.h"
+#include "display.h"
 #include "driver/touch_pad.h"
 #include "esp_http_client.h"
 #include "esp_mac.h"
 #include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "lvgl_theme.h"
 #include "mqtt_client.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -46,10 +49,15 @@ static lv_obj_t* weather_hilo_label = nullptr;
 
 static char last_drawn_weather[32] = "";  // 紀錄上次畫的天氣，避免每秒重複繪製導致閃爍
 
+// 👇 新增這行全域變數 (放在 mqtt_event_handler 的上方即可)
+static esp_mqtt_client_handle_t global_mqtt_client = nullptr;
+
 // 控制時鐘亮暗與 5 秒自動倒數
 static bool clock_is_bright = false;  // 目前是否為高亮狀態
 static int clock_dim_countdown = 0;   // 倒數計時器 (每 100ms 扣 1)
 const int CLOCK_DIM_TIMEOUT_SEC = 5;  // 亮起後等待幾秒自動變暗 (可自行改成 3 或 5 秒)
+#define BRIGHTNESS_DIM 5
+int current_max_brightness = 100;
 
 #define EYE_BASE_W 32  // 眼睛基準寬度 24
 #define EYE_BASE_H 36  // 眼睛基準高度 28
@@ -62,8 +70,6 @@ const int CLOCK_DIM_TIMEOUT_SEC = 5;  // 亮起後等待幾秒自動變暗 (可�
 #define MOUTH_BASE_W 22
 #define MOUTH_BASE_H 4
 #define MOUTH_POS_H 20
-
-#define BRIGHTNESS_DIM 5
 
 // ==========================================
 //           螢幕解析度常數 (M5AtomS3R)
@@ -159,42 +165,6 @@ static void update_eye_size_realtime() {
     if (!avatar_left_eye || !avatar_right_eye)
         return;
 
-    /*
-    // 計算左眼最終尺寸 (基底尺寸 + 動畫偏移)
-    int base_l_w = current_eye_base_w + current_anim_offset_w_left;
-    int base_l_h = current_eye_base_h + current_anim_offset_h_left;
-    if (base_l_w < 2)
-        base_l_w = 2;
-    if (base_l_h < 2)
-        base_l_h = 2;
-
-    // 重力透視縮放：傾斜時最多縮小一半 (例如 22 -> 11)
-    int squish_l_w = (abs(global_accel_x) * (base_l_w / MOVE_EYE_W)) / 4096;
-    int squish_l_h = (abs(global_accel_y) * (base_l_h / MOVE_EYE_H)) / 4096;
-    if (squish_l_w > base_l_w / MOVE_EYE_W)
-        squish_l_w = base_l_w / MOVE_EYE_W;
-    if (squish_l_h > base_l_h / MOVE_EYE_H)
-        squish_l_h = base_l_h / MOVE_EYE_H;
-
-    lv_obj_set_size(avatar_left_eye, base_l_w - squish_l_w, base_l_h - squish_l_h);
-
-    // 計算右眼最終尺寸
-    int base_r_w = current_eye_base_w + current_anim_offset_w_right;
-    int base_r_h = current_eye_base_h + current_anim_offset_h_right;
-    if (base_r_w < 2)
-        base_r_w = 2;
-    if (base_r_h < 2)
-        base_r_h = 2;
-
-    int squish_r_w = (abs(global_accel_x) * (base_r_w / MOVE_EYE_W)) / 4096;
-    int squish_r_h = (abs(global_accel_y) * (base_r_h / MOVE_EYE_H)) / 4096;
-    if (squish_r_w > base_r_w / MOVE_EYE_W)
-        squish_r_w = base_r_w / MOVE_EYE_W;
-    if (squish_r_h > base_r_h / MOVE_EYE_H)
-        squish_r_h = base_r_h / MOVE_EYE_H;
-
-    lv_obj_set_size(avatar_right_eye, base_r_w - squish_r_w, base_r_h - squish_r_h);
-    */
     // 左眼：只保留基底尺寸與動畫，不隨重力變形
     int base_l_w = current_eye_base_w + current_anim_offset_w_left;
     int base_l_h = current_eye_base_h + current_anim_offset_h_left;
@@ -528,7 +498,7 @@ static void touch_wake_task(void* pvParameters) {
                 if (current_system_mode == 3 || current_system_mode == 6) {
                     auto backlight = Board::GetInstance().GetBacklight();
                     if (backlight)
-                        backlight->SetBrightness(100);
+                        backlight->SetBrightness(current_max_brightness);
                     current_system_mode = 0;
                     current_ui_mode = 0;
                     ui_mode_changed = true;
@@ -764,6 +734,72 @@ static void update_weather_icon_ui(const char* desc) {
         lv_label_set_text(weather_icon_label, "*");
         lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0xCCCCCC), 0);
     }
+}
+
+// 👇 新增：動態顏色套用函數
+static void apply_avatar_color(int color_idx) {
+    switch (color_idx) {
+        case 1:
+            avatar_theme_color = lv_color_make(0, 200, 255);
+            break;  // 科技藍
+        case 2:
+            avatar_theme_color = lv_color_make(255, 150, 0);
+            break;  // 活力橘
+        case 3:
+            avatar_theme_color = lv_color_make(255, 100, 150);
+            break;  // 櫻花粉
+        case 4:
+            avatar_theme_color = lv_color_make(0, 220, 100);
+            break;  // 螢光綠
+        case 5:
+            avatar_theme_color = lv_color_make(255, 200, 0);
+            break;  // 閃電黃
+        case 6:
+            avatar_theme_color = lv_color_make(150, 50, 255);
+            break;  // 魅惑紫
+        case 7:
+            avatar_theme_color = lv_color_make(255, 50, 50);
+            break;  // 憤怒紅
+        default:
+            avatar_theme_color = lv_color_make(0, 200, 255);
+            break;
+    }
+
+    // 👇 強制為已存在的臉部主要零件重新上色
+    if (avatar_left_eye)
+        lv_obj_set_style_bg_color(avatar_left_eye, avatar_theme_color, 0);
+    if (avatar_right_eye)
+        lv_obj_set_style_bg_color(avatar_right_eye, avatar_theme_color, 0);
+    if (avatar_mouth)
+        lv_obj_set_style_bg_color(avatar_mouth, avatar_theme_color, 0);
+
+    // 更新其他隱藏的特殊表情零件顏色
+    if (avatar_surprised_eye && lv_obj_get_child_cnt(avatar_surprised_eye) >= 2) {
+        lv_obj_set_style_bg_color(lv_obj_get_child(avatar_surprised_eye, 0), avatar_theme_color, 0);
+        lv_obj_set_style_bg_color(lv_obj_get_child(avatar_surprised_eye, 1), avatar_theme_color, 0);
+    }
+    if (avatar_confuse && lv_obj_get_child_cnt(avatar_confuse) >= 2) {
+        lv_obj_set_style_bg_color(lv_obj_get_child(avatar_confuse, 0), avatar_theme_color, 0);
+        lv_obj_set_style_bg_color(lv_obj_get_child(avatar_confuse, 1), avatar_theme_color, 0);
+    }
+    if (avatar_mouth_laugh && lv_obj_get_child_cnt(avatar_mouth_laugh) >= 2) {
+        lv_obj_set_style_bg_color(lv_obj_get_child(avatar_mouth_laugh, 0), avatar_theme_color, 0);
+        lv_obj_set_style_bg_color(lv_obj_get_child(avatar_mouth_laugh, 1), avatar_theme_color, 0);
+    }
+    if (avatar_mouth_happy && lv_obj_get_child_cnt(avatar_mouth_happy) >= 1) {
+        lv_obj_set_style_bg_color(lv_obj_get_child(avatar_mouth_happy, 0), avatar_theme_color, 0);
+    }
+    if (avatar_sleepy_z && lv_obj_get_child_cnt(avatar_sleepy_z) >= 2) {
+        lv_obj_set_style_text_color(lv_obj_get_child(avatar_sleepy_z, 0), avatar_theme_color, 0);
+        lv_obj_set_style_text_color(lv_obj_get_child(avatar_sleepy_z, 1), avatar_theme_color, 0);
+    }
+    if (avatar_sweat && lv_obj_get_child_cnt(avatar_sweat) >= 3) {
+        lv_obj_set_style_bg_color(lv_obj_get_child(avatar_sweat, 0), avatar_theme_color, 0);
+        lv_obj_set_style_bg_color(lv_obj_get_child(avatar_sweat, 1), avatar_theme_color, 0);
+        lv_obj_set_style_bg_color(lv_obj_get_child(avatar_sweat, 2), avatar_theme_color, 0);
+    }
+
+    ui_mode_changed = true;
 }
 
 // --- 獨立的時// --- 獨立的時間刷新函數 ---
@@ -2456,7 +2492,7 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
             current_ui_mode = 3;
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight)
-                backlight->SetBrightness(100);
+                backlight->SetBrightness(current_max_brightness);
             ui_mode_changed = true;
         }
         // 7. 天氣模式指令
@@ -2468,7 +2504,7 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
             current_ui_mode = 6;
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight)
-                backlight->SetBrightness(100);
+                backlight->SetBrightness(current_max_brightness);
             ui_mode_changed = true;
 
             // 立即喚醒背景去抓天氣
@@ -3797,7 +3833,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;  // 👈 原本是 0，改為開始倒數
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight)
-                backlight->SetBrightness(100);  // 👈 原本是 BRIGHTNESS_DIM，改為 100
+                backlight->SetBrightness(
+                    current_max_brightness);  // 👈 原本是 BRIGHTNESS_DIM，改為 100
             return;
         } else if (current_ui_mode == 6) {
             // ==================== 【天氣模式】 ====================
@@ -3839,7 +3876,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;  // 👈 原本是 0，改為開始倒數
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight)
-                backlight->SetBrightness(100);  // 👈 原本是 BRIGHTNESS_DIM，改為 100
+                backlight->SetBrightness(
+                    current_max_brightness);  // 👈 原本是 BRIGHTNESS_DIM，改為 100
             return;
         } else if (current_ui_mode == 0) {  // --- 退出遊戲，回到 AI ---
             // 恢復臉部顯示
@@ -3851,7 +3889,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight)
-                backlight->SetBrightness(100);
+                backlight->SetBrightness(current_max_brightness);
         }
     }
 
@@ -4020,7 +4058,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             if (!clock_is_bright) {
                 // 當前是暗的 -> 點亮螢幕至 100%！
                 if (backlight)
-                    backlight->SetBrightness(100);
+                    backlight->SetBrightness(current_max_brightness);
                 clock_is_bright = true;
                 clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;  // 設定 5 秒倒數 (30 * 100ms)
                 ESP_LOGI("Clock", "螢幕點亮！");
@@ -5206,7 +5244,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
                 auto backlight = Board::GetInstance().GetBacklight();
                 if (backlight)
-                    backlight->SetBrightness(100);
+                    backlight->SetBrightness(current_max_brightness);
             }
         } else if (sys_state != kDeviceStateIdle) {
             idle_to_clock_counter = 0;  // AI 忙碌中，重置計時器
@@ -5230,7 +5268,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                      total_emotions);
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight)
-                backlight->SetBrightness(100);
+                backlight->SetBrightness(current_max_brightness);
         }
 
         pending_touch_wake = pending_touch_wake - 1;
@@ -5271,7 +5309,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
             // 將背光降至 2% (極致省電)
             if (backlight)
-                backlight->SetBrightness(100);
+                backlight->SetBrightness(current_max_brightness);
             return;  // 立即跳轉，不執行後續
         }
     } else {
@@ -5343,7 +5381,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
     if (current_state == kDeviceStateListening) {
         if (backlight)
-            backlight->SetBrightness(100);
+            backlight->SetBrightness(current_max_brightness);
 
         // 1. 【防禦機制】：只有在「普通」狀態時，才切換為「專心聆聽 (右眼變圓、小嘴)」的特有表情
         // 如果正在生氣或大哭，絕對不允許破壞當下情緒的眼睛與嘴巴形狀！
@@ -5371,7 +5409,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         }
     } else if (current_state == kDeviceStateSpeaking) {
         if (backlight)
-            backlight->SetBrightness(100);
+            backlight->SetBrightness(current_max_brightness);
 
         // 1. 先清除所有可能在跑的殘留動畫，避免動畫數據互相打架
         lv_anim_del(avatar_mouth, NULL);
@@ -5471,7 +5509,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         }
     } else {  // 進入待機狀態 (首次切換進來時執行一次)
         if (backlight)
-            backlight->SetBrightness(100);
+            backlight->SetBrightness(current_max_brightness);
 
         clock_is_bright = true;
         clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
@@ -5568,31 +5606,163 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
         esp_mqtt_client_subscribe(event->client, topic, 0);
         ESP_LOGI("MQTT", "✅ 成功連線 Mosquitto，已訂閱主題: %s", topic);
     } else if (event_id == MQTT_EVENT_DATA) {
-        ESP_LOGI("MQTT", "🚨 收到 MQTT 尋找設備喚醒指令！");
+        // 為了安全解析 JSON，我們將收到的資料複製並加上結束符
+        char* payload = (char*)malloc(event->data_len + 1);
+        if (payload) {
+            strncpy(payload, event->data, event->data_len);
+            payload[event->data_len] = '\0';
 
-        Application::GetInstance().Schedule([]() {
-            auto backlight = Board::GetInstance().GetBacklight();
-            if (backlight)
-                backlight->SetBrightness(100);
-            current_system_mode = 0;
-            current_ui_mode = 0;
-            ui_mode_changed = true;
+            cJSON* json = cJSON_Parse(payload);
+            if (json) {
+                cJSON* type = cJSON_GetObjectItem(json, "type");
+                if (type && type->valuestring) {
+                    // 🚨 情況 1：尋找設備喚醒
+                    if (strcmp(type->valuestring, "wakeup") == 0) {
+                        ESP_LOGI("MQTT", "🚨 收到 MQTT 尋找設備喚醒指令！");
+                        Application::GetInstance().Schedule([]() {
+                            auto backlight = Board::GetInstance().GetBacklight();
+                            if (backlight)
+                                backlight->SetBrightness(current_max_brightness);
+                            current_system_mode = 0;
+                            current_ui_mode = 0;
+                            ui_mode_changed = true;
+                            if (ai_single_click_cb) {
+                                ai_single_click_cb();
+                            }
+                        });
+                    }
+                    // ⚙️ 情況 2：Android App 即時遙控設定
+                    else if (strcmp(type->valuestring, "update_settings") == 0) {
+                        int vol = cJSON_GetObjectItem(json, "volume")
+                                      ? cJSON_GetObjectItem(json, "volume")->valueint
+                                      : 80;
+                        int bright = cJSON_GetObjectItem(json, "brightness")
+                                         ? cJSON_GetObjectItem(json, "brightness")->valueint
+                                         : 100;
+                        int color_idx = cJSON_GetObjectItem(json, "avatar_color")
+                                            ? cJSON_GetObjectItem(json, "avatar_color")->valueint
+                                            : 1;
+                        const char* theme_str =
+                            cJSON_GetObjectItem(json, "theme")
+                                ? cJSON_GetObjectItem(json, "theme")->valuestring
+                                : "dark";
 
-            // 它會正確啟動音頻引擎、發出「滴」聲，並完美支援按鍵取消！
-            if (ai_single_click_cb) {
-                ai_single_click_cb();
+                        ESP_LOGI("MQTT",
+                                 "⚙️ 收到即時設定更新: Vol:%d, Bright:%d, Theme:%s, Color:%d", vol,
+                                 bright, theme_str, color_idx);
+
+                        // 安排在主執行緒中更新 UI 與硬體
+                        Application::GetInstance().Schedule(
+                            [vol, bright, color_idx, theme_str_copy = std::string(theme_str)]() {
+                                // 1. 音量
+                                auto codec = Board::GetInstance().GetAudioCodec();
+                                if (codec)
+                                    codec->SetOutputVolume(vol);
+
+                                // 2. 亮度
+                                current_max_brightness = bright;  // 更新全域記憶
+                                auto backlight = Board::GetInstance().GetBacklight();
+                                if (backlight)
+                                    backlight->SetBrightness(bright);
+
+                                // 3. 主題 (Dark/Light)
+                                auto theme_obj =
+                                    LvglThemeManager::GetInstance().GetTheme(theme_str_copy);
+                                if (theme_obj && Board::GetInstance().GetDisplay()) {
+                                    Board::GetInstance().GetDisplay()->SetTheme(theme_obj);
+                                }
+
+                                // 4. 臉部顏色
+                                apply_avatar_color(color_idx);
+                            });
+                    }
+                }
+                cJSON_Delete(json);
             }
-        });
+            free(payload);
+        }
     }
 }
 
 static void mqtt_init_task(void* pvParameters) {
-    // 等待 5 秒，確保 ESP32 的 Wi-Fi 和網路核心完全啟動，防止崩潰
     vTaskDelay(pdMS_TO_TICKS(5000));
 
-    // 自動獲取本機的 MAC 地址 (不需手動輸入)
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
+
+    // 👇👇👇 新增：開機向伺服器拉取最新設定 ==============================
+    char url[128];
+    // password
+    snprintf(url, sizeof(url),
+             "http://chowcfu.duckdns.org:8001/api/settings?mac=%02x%02x%02x%02x%02x%02x", mac[0],
+             mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    esp_http_client_config_t http_cfg = {};
+    http_cfg.url = url;
+    http_cfg.timeout_ms = 5000;
+    esp_http_client_handle_t http_client = esp_http_client_init(&http_cfg);
+    if (http_client) {
+        if (esp_http_client_open(http_client, 0) == ESP_OK) {
+            esp_http_client_fetch_headers(http_client);
+            char* buffer = (char*)malloc(1024);
+            if (buffer) {
+                int read_len = esp_http_client_read(http_client, buffer, 1023);
+                if (read_len > 0) {
+                    buffer[read_len] = '\0';
+                    cJSON* json = cJSON_Parse(buffer);
+                    if (json) {
+                        cJSON* status = cJSON_GetObjectItem(json, "status");
+                        if (status && status->valuestring &&
+                            strcmp(status->valuestring, "ok") == 0) {
+                            int vol = cJSON_GetObjectItem(json, "volume")
+                                          ? cJSON_GetObjectItem(json, "volume")->valueint
+                                          : 80;
+                            int bright = cJSON_GetObjectItem(json, "brightness")
+                                             ? cJSON_GetObjectItem(json, "brightness")->valueint
+                                             : 100;
+                            int color_idx =
+                                cJSON_GetObjectItem(json, "avatar_color")
+                                    ? cJSON_GetObjectItem(json, "avatar_color")->valueint
+                                    : 1;
+                            const char* theme_str =
+                                cJSON_GetObjectItem(json, "theme")
+                                    ? cJSON_GetObjectItem(json, "theme")->valuestring
+                                    : "dark";
+
+                            ESP_LOGI(
+                                "Settings",
+                                "✅ 開機成功獲取雲端設定: Vol:%d, Bright:%d, Theme:%s, Color:%d",
+                                vol, bright, theme_str, color_idx);
+
+                            Application::GetInstance().Schedule(
+                                [vol, bright, color_idx,
+                                 theme_str_copy = std::string(theme_str)]() {
+                                    auto codec = Board::GetInstance().GetAudioCodec();
+                                    if (codec)
+                                        codec->SetOutputVolume(vol);
+
+                                    auto backlight = Board::GetInstance().GetBacklight();
+                                    if (backlight)
+                                        backlight->SetBrightness(bright);
+
+                                    auto theme_obj =
+                                        LvglThemeManager::GetInstance().GetTheme(theme_str_copy);
+                                    if (theme_obj && Board::GetInstance().GetDisplay()) {
+                                        Board::GetInstance().GetDisplay()->SetTheme(theme_obj);
+                                    }
+
+                                    apply_avatar_color(color_idx);
+                                });
+                        }
+                        cJSON_Delete(json);
+                    }
+                }
+                free(buffer);
+            }
+        }
+        esp_http_client_cleanup(http_client);
+    }
+    // 👆👆👆 ==========================================================
 
     // 將 MAC 地址轉為小寫字串 (例如 7ce8xxxxxx)，並組合成訂閱主題
     static char mqtt_topic[64];
@@ -5609,15 +5779,12 @@ static void mqtt_init_task(void* pvParameters) {
     // Password
     mqtt_cfg.credentials.authentication.password = "036345";
 
-    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+    // 👇 將原本的 client 改為 global_mqtt_client
+    global_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
+    esp_mqtt_client_register_event(global_mqtt_client, MQTT_EVENT_ANY, mqtt_event_handler,
+                                   (void*)mqtt_topic);
+    esp_mqtt_client_start(global_mqtt_client);
 
-    // 註冊事件回呼函數，並把 topic 當作參數傳進去
-    esp_mqtt_client_register_event(client, MQTT_EVENT_ANY, mqtt_event_handler, (void*)mqtt_topic);
-
-    // 啟動 MQTT 客戶端 (它會在背景自動保持連線與斷線重連)
-    esp_mqtt_client_start(client);
-
-    // 任務完成，刪除自己以釋放記憶體
     vTaskDelete(NULL);
 }
 
@@ -6873,7 +7040,7 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
             app_menu_selection = APP_BWA;
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight)
-                backlight->SetBrightness(100);
+                backlight->SetBrightness(current_max_brightness);
         } else if (current_system_mode == 4) {
             // Apps 選單 -> 進入 Games 選單
             current_system_mode = 1;
@@ -6892,7 +7059,7 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
             // 【新增修改】：從天氣(6) 或其他遊戲App雙擊 -> 回血 100% 亮度，回到 AI (0)
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight)
-                backlight->SetBrightness(100);
+                backlight->SetBrightness(current_max_brightness);
             current_system_mode = 0;
             current_ui_mode = 0;
             Application::GetInstance().Schedule([]() {

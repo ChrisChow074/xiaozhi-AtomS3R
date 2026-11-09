@@ -1,24 +1,24 @@
-#include "wifi_board.h"
 #include "display/lcd_display.h"
+#include "wifi_board.h"
 
 #include "codecs/box_audio_codec.h"
 #include "waveshare_audio_codec.h"
 
 #include "application.h"
 #include "button.h"
+#include "config.h"
 #include "led/single_led.h"
 #include "mcp_server.h"
-#include "config.h"
 #include "power_save_timer.h"
 
 #include <wifi_station.h>
 
-#include <esp_log.h>
-#include <esp_lcd_panel_vendor.h>
-#include <esp_idf_version.h>
 #include <driver/i2c_master.h>
-#include "i2c_bus.h"
+#include <esp_idf_version.h>
+#include <esp_lcd_panel_vendor.h>
+#include <esp_log.h>
 #include "bq27220.h"
+#include "i2c_bus.h"
 
 #include "settings.h"
 
@@ -34,20 +34,19 @@
 
 class CustomBacklight : public Backlight {
 public:
-    CustomBacklight(esp_io_expander_handle_t io_handle)
-        : Backlight(), io_handle_(io_handle) {}
+    CustomBacklight(esp_io_expander_handle_t io_handle) : Backlight(), io_handle_(io_handle) {}
 
 protected:
     esp_io_expander_handle_t io_handle_;
 
     virtual void SetBrightnessImpl(uint8_t brightness) override {
-        if (brightness > 100) brightness = 100;
+        if (brightness > 100)
+            brightness = 100;
         int flipped_brightness = brightness;
 
         custom_io_expander_set_pwm(io_handle_, flipped_brightness * 255 / 100);
     }
 };
-
 
 class WaveshareEsp32s3TouchLCD7c : public WifiBoard {
 private:
@@ -56,7 +55,7 @@ private:
     LcdDisplay* display_;
     esp_io_expander_handle_t io_expander = NULL;
     PowerSaveTimer* power_save_timer_;
-    CustomBacklight *backlight_;
+    CustomBacklight* backlight_;
     bq27220_handle_t bq27220_ = NULL;
 
     void InitializePowerSaveTimer() {
@@ -75,11 +74,11 @@ private:
     void InitializeGpio() {
         // Zero-initialize the GPIO configuration structure
         gpio_config_t io_conf = {};
-        io_conf.intr_type = GPIO_INTR_DISABLE; // Disable interrupts for this pin
-        io_conf.pin_bit_mask = 1ULL << BSP_LCD_TOUCH_INT;    // Select the GPIO pin using a bitmask
-        io_conf.mode = GPIO_MODE_OUTPUT;          // Set pin as output
-        io_conf.pull_up_en = GPIO_PULLUP_DISABLE; // Disable pull-up
-        gpio_config(&io_conf); // Apply the configuration
+        io_conf.intr_type = GPIO_INTR_DISABLE;             // Disable interrupts for this pin
+        io_conf.pin_bit_mask = 1ULL << BSP_LCD_TOUCH_INT;  // Select the GPIO pin using a bitmask
+        io_conf.mode = GPIO_MODE_OUTPUT;                   // Set pin as output
+        io_conf.pull_up_en = GPIO_PULLUP_DISABLE;          // Disable pull-up
+        gpio_config(&io_conf);                             // Apply the configuration
     }
 
     void InitializeCodecI2c() {
@@ -113,16 +112,16 @@ private:
             .R1 = 4764,
             .TC = 11,
             .C1 = 0,
-            .DOD0   = 4200,
-            .DOD10  = 4100,
-            .DOD20  = 4000,
-            .DOD30  = 3920,
-            .DOD40  = 3850,
-            .DOD50  = 3800,
-            .DOD60  = 3750,
-            .DOD70  = 3700,
-            .DOD80  = 3600,
-            .DOD90  = 3450,
+            .DOD0 = 4200,
+            .DOD10 = 4100,
+            .DOD20 = 4000,
+            .DOD30 = 3920,
+            .DOD40 = 3850,
+            .DOD50 = 3800,
+            .DOD60 = 3750,
+            .DOD70 = 3700,
+            .DOD80 = 3600,
+            .DOD90 = 3450,
             .DOD100 = 3200,
         };
         static const gauging_config_t default_config = {
@@ -151,8 +150,12 @@ private:
 
     void InitializeCustomio(void) {
         custom_io_expander_new_i2c_ch32v003(i2c_bus_, BSP_IO_EXPANDER_I2C_ADDRESS, &io_expander);
-        esp_io_expander_set_dir(io_expander, BSP_POWER_AMP_IO | BSP_LCD_BACKLIGHT | BSP_LCD_TOUCH_RST | IO_EXPANDER_PIN_NUM_6, IO_EXPANDER_OUTPUT);
-        esp_io_expander_set_level(io_expander, BSP_LCD_BACKLIGHT | BSP_LCD_TOUCH_RST | BSP_POWER_AMP_IO, 1);
+        esp_io_expander_set_dir(
+            io_expander,
+            BSP_POWER_AMP_IO | BSP_LCD_BACKLIGHT | BSP_LCD_TOUCH_RST | IO_EXPANDER_PIN_NUM_6,
+            IO_EXPANDER_OUTPUT);
+        esp_io_expander_set_level(io_expander,
+                                  BSP_LCD_BACKLIGHT | BSP_LCD_TOUCH_RST | BSP_POWER_AMP_IO, 1);
         esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_6, 1);
 
         esp_io_expander_set_level(io_expander, BSP_LCD_TOUCH_RST, 0);
@@ -169,20 +172,16 @@ private:
 
         esp_lcd_rgb_panel_config_t rgb_config = {
             .clk_src = LCD_CLK_SRC_DEFAULT,
-            .timings = {
-                .pclk_hz = 16 * 1000 * 1000,
-                .h_res = BSP_LCD_H_RES,
-                .v_res = BSP_LCD_V_RES,
-                .hsync_pulse_width = 4,
-                .hsync_back_porch = 8,
-                .hsync_front_porch = 8,
-                .vsync_pulse_width = 4,
-                .vsync_back_porch = 8,
-                .vsync_front_porch = 8,
-                .flags = {
-                    .pclk_active_neg = true
-                }
-            },
+            .timings = {.pclk_hz = 16 * 1000 * 1000,
+                        .h_res = BSP_LCD_H_RES,
+                        .v_res = BSP_LCD_V_RES,
+                        .hsync_pulse_width = 4,
+                        .hsync_back_porch = 8,
+                        .hsync_front_porch = 8,
+                        .vsync_pulse_width = 4,
+                        .vsync_back_porch = 8,
+                        .vsync_front_porch = 8,
+                        .flags = {.pclk_active_neg = true}},
             .data_width = 16,
             .in_color_format = LCD_COLOR_FMT_RGB565,
             .out_color_format = LCD_COLOR_FMT_RGB565,
@@ -194,23 +193,22 @@ private:
             .de_gpio_num = BSP_LCD_DE,
             .pclk_gpio_num = BSP_LCD_PCLK,
             .disp_gpio_num = BSP_LCD_DISP,
-            .data_gpio_nums = {
-                BSP_LCD_DATA0, BSP_LCD_DATA1, BSP_LCD_DATA2, BSP_LCD_DATA3,
-                BSP_LCD_DATA4, BSP_LCD_DATA5, BSP_LCD_DATA6, BSP_LCD_DATA7,
-                BSP_LCD_DATA8, BSP_LCD_DATA9, BSP_LCD_DATA10, BSP_LCD_DATA11,
-                BSP_LCD_DATA12, BSP_LCD_DATA13, BSP_LCD_DATA14, BSP_LCD_DATA15
-            },
-            .flags = {
-                .fb_in_psram = 1,
-            },
+            .data_gpio_nums = {BSP_LCD_DATA0, BSP_LCD_DATA1, BSP_LCD_DATA2, BSP_LCD_DATA3,
+                               BSP_LCD_DATA4, BSP_LCD_DATA5, BSP_LCD_DATA6, BSP_LCD_DATA7,
+                               BSP_LCD_DATA8, BSP_LCD_DATA9, BSP_LCD_DATA10, BSP_LCD_DATA11,
+                               BSP_LCD_DATA12, BSP_LCD_DATA13, BSP_LCD_DATA14, BSP_LCD_DATA15},
+            .flags =
+                {
+                    .fb_in_psram = 1,
+                },
         };
 
         ESP_ERROR_CHECK(esp_lcd_new_rgb_panel(&rgb_config, &panel_handle));
         ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
 
-        display_ = new RgbLcdDisplay(panel_io, panel_handle,
-                                  BSP_LCD_H_RES, BSP_LCD_V_RES, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X,
-                                  DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        display_ = new RgbLcdDisplay(panel_io, panel_handle, BSP_LCD_H_RES, BSP_LCD_V_RES,
+                                     DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X,
+                                     DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
 
         backlight_ = new CustomBacklight(io_expander);
         backlight_->RestoreBrightness();
@@ -223,15 +221,17 @@ private:
             .y_max = BSP_LCD_V_RES - 1,
             .rst_gpio_num = GPIO_NUM_NC,
             .int_gpio_num = GPIO_NUM_NC,
-            .levels = {
-                .reset = 0,
-                .interrupt = 0,
-            },
-            .flags = {
-                .swap_xy = 0,
-                .mirror_x = 0,
-                .mirror_y = 0,
-            },
+            .levels =
+                {
+                    .reset = 0,
+                    .interrupt = 0,
+                },
+            .flags =
+                {
+                    .swap_xy = 0,
+                    .mirror_x = 0,
+                    .mirror_y = 0,
+                },
         };
         esp_lcd_panel_io_handle_t tp_io_handle = NULL;
 
@@ -264,34 +264,20 @@ public:
         InitializeCustomio();
         InitializeRGB();
         InitializeTouch();
-        GetBacklight()->SetBrightness(100);
+        GetBacklight()->SetBrightness(current_max_brightness);
     }
 
     virtual AudioCodec* GetAudioCodec() override {
         static WaveshareAudioCodec audio_codec(
-            i2c_bus_,
-            AUDIO_INPUT_SAMPLE_RATE,
-            AUDIO_OUTPUT_SAMPLE_RATE,
-            BSP_I2S_MCLK,
-            BSP_I2S_SCLK,
-            BSP_I2S_LCLK,
-            BSP_I2S_DOUT,
-            BSP_I2S_DSIN,
-            BSP_PA_PIN,
-            BSP_CODEC_ES8389_ADDR,
-            BSP_CODEC_ES7210_ADDR,
-            AUDIO_INPUT_REFERENCE
-        );
+            i2c_bus_, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE, BSP_I2S_MCLK, BSP_I2S_SCLK,
+            BSP_I2S_LCLK, BSP_I2S_DOUT, BSP_I2S_DSIN, BSP_PA_PIN, BSP_CODEC_ES8389_ADDR,
+            BSP_CODEC_ES7210_ADDR, AUDIO_INPUT_REFERENCE);
         return &audio_codec;
     }
 
-    virtual Display* GetDisplay() override {
-        return display_;
-    }
+    virtual Display* GetDisplay() override { return display_; }
 
-    virtual Backlight *GetBacklight() override {
-         return backlight_;
-    }
+    virtual Backlight* GetBacklight() override { return backlight_; }
 
     virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
         static bool last_discharging = false;
