@@ -14,3 +14,5 @@ void CustomApp_HijackSideButton(Button& side_button);
 void CustomApp_ProvideI2CBus(i2c_master_bus_handle_t bus_handle);
 // 接收語音文字指令的鉤子
 void CustomApp_OnChatMessage(const char* role, const char* content);
+
+extern int current_max_brightness;
