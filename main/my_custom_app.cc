@@ -6250,6 +6250,16 @@ static void mqtt_init_task(void* pvParameters) {
     // password
     mqtt_cfg.credentials.authentication.password = "036345";
 
+    mqtt_cfg.session.last_will.topic = mqtt_status_topic;
+    mqtt_cfg.session.last_will.msg = "offline";
+    mqtt_cfg.session.last_will.msg_len = 7;
+    mqtt_cfg.session.last_will.qos = 1;
+    mqtt_cfg.session.last_will.retain = 1;
+
+    // 👇 加入這行：將心跳超時縮短為 10 秒！
+    // 只要手錶斷線超過 10~15 秒，伺服器就會立刻廣播 "offline"
+    mqtt_cfg.session.keepalive = 10;
+
     // 👇 將原本的 client 改為 global_mqtt_client
     global_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(global_mqtt_client, MQTT_EVENT_ANY, mqtt_event_handler,
