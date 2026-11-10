@@ -5777,7 +5777,7 @@ static void mqtt_init_task(void* pvParameters) {
 
     // 設定 MQTT 連線參數
     esp_mqtt_client_config_t mqtt_cfg = {};
-    mqtt_cfg.broker.address.uri = "mqtt://192.168.1.201:1883";
+    mqtt_cfg.broker.address.uri = "mqtt://chowcfu.duckdns.org:1883";
     mqtt_cfg.credentials.username = "xiaozhi_mqtt";
     mqtt_cfg.credentials.authentication.password = "036345";  // Password
 
