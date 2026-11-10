@@ -6243,7 +6243,7 @@ static void mqtt_init_task(void* pvParameters) {
     // 設定 MQTT 連線參數
     esp_mqtt_client_config_t mqtt_cfg = {};
     // ⚠️ 必改：請填寫你 Home Assistant 的 IP
-    mqtt_cfg.broker.address.uri = "mqtt://192.168.1.201:1883";
+    mqtt_cfg.broker.address.uri = "mqtt://chowcfu.duckdns.org:1883";
     // ⚠️ 必改：請填寫你剛才在 HA 建立的使用者名稱
     mqtt_cfg.credentials.username = "xiaozhi_mqtt";
     // ⚠️ 必改：請填寫對應的密碼
