@@ -51,6 +51,7 @@ static char last_drawn_weather[32] = "";  // 紀錄上次畫的天氣，避免�
 
 // 👇 新增這行全域變數 (放在 mqtt_event_handler 的上方即可)
 static esp_mqtt_client_handle_t global_mqtt_client = nullptr;
+static char mqtt_status_topic[64];
 
 // 控制時鐘亮暗與 5 秒自動倒數
 static bool clock_is_bright = false;  // 目前是否為高亮狀態
@@ -5604,6 +5605,8 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
     if (event_id == MQTT_EVENT_CONNECTED) {
         char* topic = (char*)handler_args;
         esp_mqtt_client_subscribe(event->client, topic, 0);
+        esp_mqtt_client_publish(event->client, mqtt_status_topic, "online", 6, 1, 1);
+
         ESP_LOGI("MQTT", "✅ 成功連線 Mosquitto，已訂閱主題: %s", topic);
     } else if (event_id == MQTT_EVENT_DATA) {
         // 為了安全解析 JSON，我們將收到的資料複製並加上結束符
@@ -5690,12 +5693,15 @@ static void mqtt_init_task(void* pvParameters) {
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
 
-    // 👇👇👇 新增：開機向伺服器拉取最新設定 ==============================
     char url[128];
     // password
     snprintf(url, sizeof(url),
              "http://chowcfu.duckdns.org:8001/api/settings?mac=%02x%02x%02x%02x%02x%02x", mac[0],
              mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    snprintf(mqtt_status_topic, sizeof(mqtt_status_topic),
+             "xiaozhi/status/%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4],
+             mac[5]);
 
     esp_http_client_config_t http_cfg = {};
     http_cfg.url = url;
@@ -5771,13 +5777,15 @@ static void mqtt_init_task(void* pvParameters) {
 
     // 設定 MQTT 連線參數
     esp_mqtt_client_config_t mqtt_cfg = {};
-    // ⚠️ 必改：請填寫你 Home Assistant 的 IP
     mqtt_cfg.broker.address.uri = "mqtt://192.168.1.201:1883";
-    // ⚠️ 必改：請填寫你剛才在 HA 建立的使用者名稱
     mqtt_cfg.credentials.username = "xiaozhi_mqtt";
-    // ⚠️ 必改：請填寫對應的密碼
-    // Password
-    mqtt_cfg.credentials.authentication.password = "036345";
+    mqtt_cfg.credentials.authentication.password = "036345";  // Password
+
+    mqtt_cfg.session.last_will.topic = mqtt_status_topic;
+    mqtt_cfg.session.last_will.msg = "offline";
+    mqtt_cfg.session.last_will.msg_len = 7;
+    mqtt_cfg.session.last_will.qos = 1;
+    mqtt_cfg.session.last_will.retain = 1;
 
     // 👇 將原本的 client 改為 global_mqtt_client
     global_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
