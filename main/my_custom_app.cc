@@ -5787,6 +5787,8 @@ static void mqtt_init_task(void* pvParameters) {
     mqtt_cfg.session.last_will.qos = 1;
     mqtt_cfg.session.last_will.retain = 1;
 
+    mqtt_cfg.session.keepalive = 10;
+
     // 👇 將原本的 client 改為 global_mqtt_client
     global_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(global_mqtt_client, MQTT_EVENT_ANY, mqtt_event_handler,
