@@ -73,7 +73,7 @@ int current_max_brightness = 100;
 static const char* pending_emotion_cmd = nullptr;  // 用來安全傳遞表情指令
 
 #define EYE_BASE_W 36  // 眼睛基準寬度 (original 22)
-#define EYE_BASE_H 42  // 眼睛基準高度 (original 30)
+#define EYE_BASE_H 43  // 眼睛基準高度 (original 30)
 #define EYE_BALL_W 55  // 眼睛的45%
 #define EYE_BALL_H 60  // 眼睛的55%
 #define EYE_POS_L -32  // (original 30)
@@ -82,7 +82,7 @@ static const char* pending_emotion_cmd = nullptr;  // 用來安全傳遞表情�
 #define EYE_CORNER 17  // (LV_RADIUS_CIRCLE)
 #define MOUTH_BASE_W 22
 #define MOUTH_BASE_H 6
-#define MOUTH_POS_H 11
+#define MOUTH_POS_H 14
 
 // ==========================================
 //           螢幕解析度常數 (M5StickS3)
@@ -6093,8 +6093,15 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
                             current_system_mode = 0;
                             current_ui_mode = 0;
                             ui_mode_changed = true;
-                            if (ai_single_click_cb) {
-                                ai_single_click_cb();
+
+                            // 👇 關鍵防呆：只有在「待機(Idle)」狀態，才模擬按鍵喚醒
+                            // 如果已經在聆聽或說話，代表連線還在，就不按按鍵，以免把它掛斷！
+                            if (Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
+                                if (ai_single_click_cb) {
+                                    ai_single_click_cb();
+                                }
+                            } else {
+                                ESP_LOGI("MQTT", "設備已在連線狀態，無需再次喚醒");
                             }
                         });
                     }
@@ -6570,22 +6577,22 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     lv_obj_set_style_border_width(avatar_confuse, 0, 0);
     lv_obj_set_style_pad_all(avatar_confuse, 0, 0);
     lv_obj_clear_flag(avatar_confuse, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(avatar_confuse, LV_ALIGN_CENTER, 0, EYE_POS_H + 1);
+    lv_obj_align(avatar_confuse, LV_ALIGN_CENTER, 0, EYE_POS_H + 3);
 
     lv_obj_t* confuse_eye_l = lv_obj_create(avatar_confuse);
-    lv_obj_set_size(confuse_eye_l, 12, 16);
+    lv_obj_set_size(confuse_eye_l, 16, 16);
     lv_obj_set_style_bg_color(confuse_eye_l, avatar_theme_color, 0);
     lv_obj_set_style_border_width(confuse_eye_l, 0, 0);  // 修正：確保邊框為 0
-    lv_obj_set_style_radius(confuse_eye_l, 6, 0);
-    lv_obj_align(confuse_eye_l, LV_ALIGN_BOTTOM_MID, EYE_POS_L + 6, 0);
+    lv_obj_set_style_radius(confuse_eye_l, LV_RADIUS_CIRCLE, 0);
+    lv_obj_align(confuse_eye_l, LV_ALIGN_BOTTOM_MID, EYE_POS_L + 8, 0);
     lv_obj_clear_flag(confuse_eye_l, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t* confuse_eye_r = lv_obj_create(avatar_confuse);
-    lv_obj_set_size(confuse_eye_r, 12, 16);
+    lv_obj_set_size(confuse_eye_r, 16, 16);
     lv_obj_set_style_bg_color(confuse_eye_r, avatar_theme_color, 0);
     lv_obj_set_style_border_width(confuse_eye_r, 0, 0);  // 修正：確保邊框為 0
-    lv_obj_set_style_radius(confuse_eye_r, 6, 0);
-    lv_obj_align(confuse_eye_r, LV_ALIGN_BOTTOM_MID, EYE_POS_R + 6, 0);
+    lv_obj_set_style_radius(confuse_eye_r, LV_RADIUS_CIRCLE, 0);
+    lv_obj_align(confuse_eye_r, LV_ALIGN_BOTTOM_MID, EYE_POS_R + 8, 0);
     lv_obj_clear_flag(confuse_eye_r, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_add_flag(avatar_confuse, LV_OBJ_FLAG_HIDDEN);  // 平常隱藏
@@ -6719,7 +6726,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     lv_obj_set_style_border_width(avatar_sleepy_z, 0, 0);
     lv_obj_set_style_pad_all(avatar_sleepy_z, 0, 0);
     lv_obj_clear_flag(avatar_sleepy_z, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(avatar_sleepy_z, LV_ALIGN_CENTER, EYE_POS_R + (EYE_BASE_W - 6),
+    lv_obj_align(avatar_sleepy_z, LV_ALIGN_CENTER, EYE_POS_R + (EYE_BASE_W - 2),
                  EYE_POS_H - (EYE_BASE_H - 10));
 
     // 大 Z (靠右上一點)
@@ -6783,7 +6790,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     lv_obj_set_style_bg_opa(embrassing_left, LV_OPA_COVER, 20);
     lv_obj_set_style_border_width(embrassing_left, 0, 0);
     lv_obj_clear_flag(embrassing_left, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(embrassing_left, LV_ALIGN_CENTER, EYE_POS_L - EYE_BASE_W + 8,
+    lv_obj_align(embrassing_left, LV_ALIGN_CENTER, EYE_POS_L - EYE_BASE_W + 2,
                  0);  // 左臉頰座標
 
     // 3. 右臉頰粉紅橢圓 (位於右眼下方偏右)
@@ -6794,7 +6801,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     lv_obj_set_style_bg_opa(embrassing_right, LV_OPA_COVER, 20);
     lv_obj_set_style_border_width(embrassing_right, 0, 0);
     lv_obj_clear_flag(embrassing_right, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(embrassing_right, LV_ALIGN_CENTER, EYE_POS_R + EYE_BASE_W - 6,
+    lv_obj_align(embrassing_right, LV_ALIGN_CENTER, EYE_POS_R + EYE_BASE_W,
                  0);  // 右臉頰座標
 
     // 平常預設隱藏
@@ -6836,7 +6843,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     lv_obj_clear_flag(avatar_heart, LV_OBJ_FLAG_SCROLLABLE);
     // lv_obj_align(avatar_heart, LV_ALIGN_TOP_RIGHT, -6, 10);  // 位於右眼上方偏右
     lv_obj_align(avatar_sweat, LV_ALIGN_CENTER, EYE_POS_R + 16,
-                 EYE_POS_H - EYE_BASE_H + 6);  // 位於左眼上方偏左
+                 EYE_POS_H - EYE_BASE_H + 2);  // 位於左眼上方偏左
 
     // 浪漫粉紅/桃紅色
     lv_color_t heart_color = lv_color_hex(0xFF3366);
@@ -7112,7 +7119,7 @@ void CustomApp_SetEmotion(const char* emotion) {
         }
 
     } else if (emo_str == "crying") {
-        set_eye_size(EYE_BASE_W, 8);  // 眼睛瞇起來哭
+        set_eye_size(EYE_BASE_W, 10);  // 眼睛瞇起來哭
         // lv_obj_set_size(avatar_mouth, 20, 20);        // 嘴巴張大哭
         lv_obj_set_style_radius(avatar_mouth, 8, 0);  // 嘴巴帶點圓角
         if (left_eye_ball)
@@ -7330,9 +7337,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         }
     } else if (emo_str == "cool") {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
-        lv_obj_set_size(avatar_mouth, 1, 1);
+        // lv_obj_set_size(avatar_mouth, 1, 1);
 
         if (avatar_mouth_happy) {
+            lv_obj_remove_flag(avatar_mouth, LV_OBJ_FLAG_HIDDEN);
             lv_obj_remove_flag(avatar_mouth_happy, LV_OBJ_FLAG_HIDDEN);
         }
         if (avatar_cool) {
@@ -7344,10 +7352,6 @@ void CustomApp_SetEmotion(const char* emotion) {
         if (avatar_sad_eye) {
             lv_obj_remove_flag(avatar_sad_eye, LV_OBJ_FLAG_HIDDEN);
         }
-        if (left_eye_ball)
-            lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
-        if (right_eye_ball)
-            lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
 
     } else if (emo_str == "winking") {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
@@ -7390,7 +7394,7 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_remove_flag(avatar_kissy, LV_OBJ_FLAG_HIDDEN);
         }
     } else if (emo_str == "sleepy") {
-        set_eye_size(EYE_BASE_W, 8);
+        set_eye_size(EYE_BASE_W, 10);
         lv_obj_set_size(avatar_mouth, 18, 20);
         if (avatar_sleepy_z) {
             lv_obj_remove_flag(avatar_sleepy_z, LV_OBJ_FLAG_HIDDEN);
