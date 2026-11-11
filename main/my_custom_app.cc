@@ -5629,8 +5629,15 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
                             current_system_mode = 0;
                             current_ui_mode = 0;
                             ui_mode_changed = true;
-                            if (ai_single_click_cb) {
-                                ai_single_click_cb();
+
+                            // 👇 關鍵防呆：只有在「待機(Idle)」狀態，才模擬按鍵喚醒
+                            // 如果已經在聆聽或說話，代表連線還在，就不按按鍵，以免把它掛斷！
+                            if (Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
+                                if (ai_single_click_cb) {
+                                    ai_single_click_cb();
+                                }
+                            } else {
+                                ESP_LOGI("MQTT", "設備已在連線狀態，無需再次喚醒");
                             }
                         });
                     }
