@@ -32,6 +32,46 @@
 // StickS3
 
 // ==========================================
+//           螢幕解析度常數 (M5StickS3)
+// ==========================================
+#define LCD_W 135
+#define LCD_H 240
+static lv_display_rotation_t current_stick_rot = LV_DISPLAY_ROTATION_0;
+static bool is_landscape = false;         // false: 直向 (135x240), true: 橫向 (240x135)
+static lv_obj_t* g_app_parent = nullptr;  // 記錄小智傳入的 UI 根容器
+
+// =======================================================
+// 🛠️ ST7789 螢幕物理 Offset 動態修正引擎
+// =======================================================
+static void apply_stick_display_rotation_and_offset(lv_display_t* disp, lv_display_rotation_t rot) {
+    if (!disp)
+        return;
+
+    // 1. 設置 LVGL 軟體旋轉
+    lv_display_set_rotation(disp, rot);
+
+    // 2. 針對 M5StickS3 (ST7789 135x240) 的硬體 Offset 矩陣修正
+    // 解決橫向時畫面往右上偏移、左下透出殘影的問題
+    switch (rot) {
+        case LV_DISPLAY_ROTATION_0:
+            lv_display_set_offset(disp, 52, 40);
+            break;
+        case LV_DISPLAY_ROTATION_90:
+            lv_display_set_offset(disp, 40, 53);
+            break;
+        case LV_DISPLAY_ROTATION_180:
+            lv_display_set_offset(disp, 52, 40);
+            break;
+        case LV_DISPLAY_ROTATION_270:
+            lv_display_set_offset(disp, 40, 52);
+            break;
+    }
+
+    // 3. 強制整個螢幕全域刷新重繪，抹除舊畫面的邊緣殘影
+    lv_obj_invalidate(lv_screen_active());
+}
+
+// ==========================================
 // ⚠️ 紅外線與喇叭腳位設定 (M5Stick 系列預設)
 // 若發現收不到，請查閱你手邊實際板子的腳位圖修改
 // ==========================================
@@ -83,12 +123,34 @@ static const char* pending_emotion_cmd = nullptr;  // 用來安全傳遞表情�
 #define MOUTH_BASE_W 22
 #define MOUTH_BASE_H 6
 #define MOUTH_POS_H 14
+// 橫向時的位置
+#define EYE_POS_LL -40
+#define EYE_POS_LR 40
+#define EYE_POS_LH -4
+#define MOUTH_BASE_LW 28
+#define MOUTH_POS_LH 14
 
 // ==========================================
-//           螢幕解析度常數 (M5StickS3)
+// 🎯 橫向 / 直向 動態座標引擎
 // ==========================================
-#define LCD_W 135
-#define LCD_H 240
+static inline int get_cur_eye_pos_l() {
+    return is_landscape ? EYE_POS_LL : EYE_POS_L;  // 橫放 -52，直放 -32
+}
+
+static inline int get_cur_eye_pos_r() {
+    return is_landscape ? EYE_POS_LR : EYE_POS_R;  // 橫放 52，直放 32
+}
+
+static inline int get_cur_eye_pos_h() {
+    return is_landscape ? EYE_POS_LH : EYE_POS_H;  // 橫放 -6，直放 -12
+}
+
+static inline int get_cur_mouth_pos_h() {
+    return is_landscape ? MOUTH_POS_LH : MOUTH_POS_H;  // 橫放 20，直放 11
+}
+static inline int get_cur_mouth_width() {
+    return is_landscape ? MOUTH_BASE_LW : MOUTH_BASE_W;  // 橫放 20，直放 11
+}
 
 // ==========================================
 //           老虎機 (Lucky Slot) 系統變數
@@ -600,7 +662,7 @@ static void update_weather_icon_ui(const char* desc) {
     bool is_daytime = (timeinfo.tm_hour >= 7 && timeinfo.tm_hour < 19);
 
     // 【修改】：避免反覆 lv_obj_clean 產生記憶體碎片，改為重複利用 label
-    if (!weather_icon_label) {
+    if (!weather_icon_label || lv_obj_get_parent(weather_icon_label) != weather_icon_container) {
         weather_icon_label = lv_label_create(weather_icon_container);
         lv_obj_set_style_text_font(weather_icon_label, &weather_110, 0);
         lv_obj_align(weather_icon_label, LV_ALIGN_CENTER, 0, 0);
@@ -795,8 +857,12 @@ static void update_clock_display() {
     strftime(hour_str, sizeof(hour_str), "%I", &timeinfo);
     strftime(min_str, sizeof(min_str), "%M", &timeinfo);
 
-    strftime(date_str, sizeof(date_str), "%m-%d %a", &timeinfo);  // 例如 09-23 Wed
-    // strftime(date_str, sizeof(date_str), "%m-%d\n%A", &timeinfo);  // 例如 09-23 Wednesday
+    if (!is_landscape) {
+        strftime(date_str, sizeof(date_str), "%m-%d %a", &timeinfo);
+    }  // 例如 09-23 Wed
+    else {
+        strftime(date_str, sizeof(date_str), "%m-%d %A", &timeinfo);
+    }  // 例如 09-23 Wednesday
 
     if (time_mode_hour_label) {
         lv_label_set_text(time_mode_hour_label, hour_str);
@@ -861,21 +927,6 @@ static void update_clock_display() {
 
     // 2. 更新【天氣模式】的 UI
     if (weather_current_label && !lv_obj_has_flag(bg_weather_mode, LV_OBJ_FLAG_HIDDEN)) {
-        /*
-        // ==========================================
-        // ⬇️ 測試專用代碼開始 (測試完記得刪除或註解掉)
-        // ==========================================
-        const char* test_weathers[] = {"Sunny", "PartlyCloudy", "Overcast", "Cloudy", "HeavyRain",
-                                       "Rain",  "Storm",        "Snow",     "Fog",    "Wind"};
-        // 根據目前的秒數，每 2 秒切換一個陣列索引 (0~9)
-        int test_idx = (timeinfo.tm_sec / 2) % 10;
-
-        strncpy(weather_desc, test_weathers[test_idx], sizeof(weather_desc) - 1);
-        weather_ready = true;  // 強制讓系統以為資料準備好了
-        // ==========================================
-        // ⬆️ 測試專用代碼結束
-        // ==========================================
-        */
         if (weather_ready) {
             // 【新增】：檢查天氣狀態有沒有變，有變才重新畫幾何圖形 (防閃爍)
             if (strcmp(last_drawn_weather, weather_desc) != 0) {
@@ -883,9 +934,13 @@ static void update_clock_display() {
                 update_weather_icon_ui(weather_desc);
             }
 
-            // 氣溫與狀態換行
-            lv_label_set_text_fmt(weather_current_label, "%s\n%d°C", weather_desc,
-                                  weather_temp_cur);
+            if (is_landscape) {
+                lv_label_set_text_fmt(weather_current_label, "%d°C | %s", weather_temp_cur,
+                                      weather_desc);
+            } else {
+                lv_label_set_text_fmt(weather_current_label, "%s\n%d°C", weather_desc,
+                                      weather_temp_cur);
+            }
             // 最高低溫
             lv_label_set_text_fmt(weather_hilo_label, "High: %d°C\nLow: %d°C", weather_temp_max,
                                   weather_temp_min);
@@ -2382,11 +2437,11 @@ static void anim_eye_snore_cb(void* var, int32_t v) {
     current_anim_offset_h_right = -((EYE_BASE_H - 6) * v / 100);
     update_eye_size_realtime();
 
-    int32_t base_y = EYE_POS_H;
+    int32_t base_y = get_cur_eye_pos_h();
     int32_t move_up_max = 10;
     int32_t cur_y = base_y - (move_up_max * v / 100);
-    lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, cur_y);
-    lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, cur_y);
+    lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, get_cur_eye_pos_l(), cur_y);
+    lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, get_cur_eye_pos_r(), cur_y);
 }
 
 static void anim_mouth_snore_cb(void* var, int32_t v) {
@@ -2395,8 +2450,8 @@ static void anim_mouth_snore_cb(void* var, int32_t v) {
     // ==========================================
     // 1. 定義【合上口】時的尺寸 (v = 0 時的狀態)
     // ==========================================
-    int32_t close_w = MOUTH_BASE_W;  // <-- 你設定的合上寬度
-    int32_t close_h = MOUTH_BASE_H;  // 合上時的高度
+    int32_t close_w = get_cur_mouth_width();  // <-- 你設定的合上寬度
+    int32_t close_h = MOUTH_BASE_H;           // 合上時的高度
 
     // ==========================================
     // 2. 定義【張開打呼】時的尺寸 (v = 100 時的狀態)
@@ -2411,8 +2466,8 @@ static void anim_mouth_snore_cb(void* var, int32_t v) {
     int32_t cur_w = close_w + (open_w - close_w) * v / 100;
     int32_t cur_h = close_h + (open_h - close_h) * v / 100;
 
-    int32_t base_y = MOUTH_POS_H;  // 這是口部平常的 Y 軸基準位置 (請依你的設定微調)
-    int32_t move_down_max = 4;     // 最大上移量 (4px 在 128x128 螢幕上最自然)
+    int32_t base_y = get_cur_mouth_pos_h();
+    int32_t move_down_max = 4;  // 最大上移量 (4px 在 128x128 螢幕上最自然)
     int32_t cur_y = base_y - (move_down_max * v / 100);
 
     lv_obj_set_size(obj, cur_w, cur_h);
@@ -2561,15 +2616,17 @@ static void start_mouth_animation() {
     if (!avatar_mouth)
         return;
     lv_anim_del(avatar_mouth, NULL);
-    lv_obj_set_size(avatar_mouth, MOUTH_BASE_W, MOUTH_BASE_H);
-    lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
+    lv_obj_set_size(avatar_mouth, get_cur_mouth_width(), MOUTH_BASE_H);
+    // 🌟 改用 get_cur_mouth_pos_h()
+    lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, get_cur_mouth_pos_h());
+
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_exec_cb(&a, anim_mouth_snore_cb);
     lv_anim_set_values(&a, 0, 100);
     lv_anim_set_duration(&a, 600);
     lv_anim_set_playback_duration(&a, 2400);
-    lv_anim_set_repeat_count(&a, 1);  // 👈 只播放 1 次
+    lv_anim_set_repeat_count(&a, 1);
     lv_anim_set_var(&a, avatar_mouth);
     lv_anim_start(&a);
 }
@@ -3048,6 +3105,75 @@ static void slot_stop_reel(int col) {
     lv_anim_start(&a);
 }
 
+// =======================================================
+// 🖥️ 小智原生 UI 深度適配引擎 (將狀態列、字幕列拉滿 240px)
+// =======================================================
+static void update_system_layout_for_orientation() {
+    lv_display_t* disp = lv_display_get_default();
+    int cur_w = lv_display_get_horizontal_resolution(disp);
+    int cur_h = lv_display_get_vertical_resolution(disp);
+
+    lv_obj_t* scr = lv_screen_active();
+    if (!scr)
+        return;
+
+    // 1. 根螢幕設為當前尺寸
+    lv_obj_set_size(scr, cur_w, cur_h);
+
+    // 2. 遍歷活躍螢幕的所有子物件（小智的 top_bar, status_bar, bottom_bar 都掛在這裡）
+    uint32_t cnt = lv_obj_get_child_cnt(scr);
+    for (uint32_t i = 0; i < cnt; i++) {
+        lv_obj_t* child = lv_obj_get_child(scr, i);
+        if (!child)
+            continue;
+
+        // A. 如果是全螢幕背景/臉部容器
+        if (child == face_container) {
+            lv_obj_set_size(child, cur_w, cur_h);
+            lv_obj_align(child, LV_ALIGN_CENTER, 0, 0);
+            continue;
+        }
+
+        // B. 判斷是否為頂部狀態列 (掛在頂部的物件)
+        // 頂部狀態列的特徵：高度較小，且對齊在 TOP
+        if (lv_obj_get_y(child) <= 10 && lv_obj_get_height(child) < 40) {
+            lv_obj_set_width(child, cur_w);
+            lv_obj_align(child, LV_ALIGN_TOP_MID, 0, 0);
+            // 讓裡面的文字標籤居中
+            if (lv_obj_get_child_cnt(child) > 0) {
+                for (uint32_t j = 0; j < lv_obj_get_child_cnt(child); j++) {
+                    lv_obj_t* sub = lv_obj_get_child(child, j);
+                    // 如果是文字標籤，寬度設為 80% 並重新置中
+                    if (lv_obj_check_type(sub, &lv_label_class)) {
+                        lv_obj_set_width(sub, cur_w * 0.8);
+                        lv_obj_align(sub, LV_ALIGN_CENTER, 0, 0);
+                    }
+                }
+            }
+        }
+
+        // C. 判斷是否為底部字幕列 (bottom_bar_)
+        // 特徵：對齊在螢幕底部
+        if (lv_obj_get_y(child) > (cur_h / 2)) {
+            lv_obj_set_width(child, cur_w);
+            lv_obj_align(child, LV_ALIGN_BOTTOM_MID, 0, 0);
+            lv_obj_clear_flag(child, LV_OBJ_FLAG_SCROLLABLE);  // 消除左邊灰色的滾動條！
+
+            // 調整裡面的字幕 label (chat_message_label_)
+            for (uint32_t j = 0; j < lv_obj_get_child_cnt(child); j++) {
+                lv_obj_t* sub = lv_obj_get_child(child, j);
+                if (sub) {
+                    lv_obj_set_width(sub, cur_w - 16);  // 寬度拉滿到 224px
+                    lv_obj_align(sub, LV_ALIGN_CENTER, 0, 0);
+                }
+            }
+        }
+    }
+
+    // 3. 立即強制觸發佈局重繪
+    lv_obj_update_layout(scr);
+}
+
 static void reset_avatar_geometry() {
     lv_obj_t* all_parts[] = {
         avatar_left_eye,    avatar_right_eye,    avatar_sad_eye, avatar_surprised_eye,
@@ -3064,20 +3190,20 @@ static void reset_avatar_geometry() {
 
     if (avatar_left_eye) {
         lv_obj_set_size(avatar_left_eye, EYE_BASE_W, EYE_BASE_H);
-        lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);               // 🌟 改為 4 保持一致
-        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H);  // 基準左眼
+        lv_obj_set_style_radius(avatar_left_eye, EYE_CORNER, 0);
+        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, get_cur_eye_pos_l(), get_cur_eye_pos_h());
     }
     if (avatar_right_eye) {
         lv_obj_set_size(avatar_right_eye, EYE_BASE_W, EYE_BASE_H);
-        lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);  // 🌟 改為 4 保持一致
-        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H);  // 基準右眼
+        lv_obj_set_style_radius(avatar_right_eye, EYE_CORNER, 0);
+        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, get_cur_eye_pos_r(), get_cur_eye_pos_h());
     }
     if (avatar_mouth) {
-        lv_obj_set_size(avatar_mouth, MOUTH_BASE_W, MOUTH_BASE_H);
+        lv_obj_set_size(avatar_mouth, get_cur_mouth_width(), MOUTH_BASE_H);
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
-        lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);  // 基準嘴巴 (置中)
+        lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, get_cur_mouth_pos_h());
     }
-    // 👇 確保眼球的重力偏移也回到正中央
+    // 眼球瞳孔歸位
     if (left_eye_ball)
         lv_obj_align(left_eye_ball, LV_ALIGN_CENTER, 1, -2);
     if (right_eye_ball)
@@ -3123,6 +3249,22 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     // 處理模式切換的 UI 重繪
     if (ui_mode_changed) {
         ui_mode_changed = false;
+
+        // =========================================================================
+        // 🔒 App Mode (4, 5) 與 Game Mode (1, 2) 專屬防護：
+        // 強制排除橫向翻轉，一律鎖定為「正向直立 (ROTATION_0)」，並將 Offset 恢復為 (52, 40)
+        // =========================================================================
+        if (current_ui_mode != 0 && current_ui_mode != 3 && current_ui_mode != 6) {
+            current_stick_rot = LV_DISPLAY_ROTATION_0;
+            is_landscape = false;
+
+            // 呼叫我們的修正函數，將旋轉還原至 0，並將 Offset 徹底還原為 (52, 40)！
+            apply_stick_display_rotation_and_offset(lv_display_get_default(),
+                                                    LV_DISPLAY_ROTATION_0);
+
+            // 確保系統寬高正確拉回直向 135 x 240
+            update_system_layout_for_orientation();
+        }
 
         // 1. 暴力破解法：先把「所有圖層」通通隱藏！
         if (avatar_left_eye)
@@ -4182,89 +4324,123 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         } else if (current_ui_mode == 3) {
             // ==================== 【時間模式】 ====================
             if (!bg_time_mode) {
+                // 動態取得當前旋轉後的實際寬高
+                int cur_w = lv_display_get_horizontal_resolution(lv_display_get_default());
+                int cur_h = lv_display_get_vertical_resolution(lv_display_get_default());
+
                 bg_time_mode = lv_obj_create(lv_scr_act());
-                lv_obj_set_size(bg_time_mode, LCD_W, LCD_H);
+                lv_obj_set_size(bg_time_mode, cur_w, cur_h);
                 lv_obj_set_style_border_width(bg_time_mode, 0, 0);
                 lv_obj_set_style_pad_all(bg_time_mode, 0, 0);
                 lv_obj_clear_flag(bg_time_mode, LV_OBJ_FLAG_SCROLLABLE);
                 lv_obj_align(bg_time_mode, LV_ALIGN_TOP_LEFT, 0, 0);
                 lv_obj_set_style_radius(bg_time_mode, 0, 0);
 
-                // 時
                 time_mode_hour_label = lv_label_create(bg_time_mode);
-                lv_obj_set_style_text_font(time_mode_hour_label, &micro5_120, 0);
-                lv_obj_align(time_mode_hour_label, LV_ALIGN_TOP_MID, 3, 30);
-                lv_obj_set_style_text_align(time_mode_hour_label, LV_TEXT_ALIGN_CENTER, 0);
-
-                // 分
                 time_mode_min_label = lv_label_create(bg_time_mode);
-                lv_obj_set_style_text_font(time_mode_min_label, &micro5_120, 0);
-                lv_obj_align(time_mode_min_label, LV_ALIGN_TOP_MID, 3, 100);
-                lv_obj_set_style_text_align(time_mode_min_label, LV_TEXT_ALIGN_CENTER, 0);
-
-                // 日期與星期
                 time_mode_date_label = lv_label_create(bg_time_mode);
-                lv_obj_set_style_text_font(time_mode_date_label, &lv_font_montserrat_24, 0);
-                lv_obj_set_style_text_color(time_mode_date_label, lv_color_make(255, 200, 0), 0);
-                lv_obj_align(time_mode_date_label, LV_ALIGN_BOTTOM_LEFT, 10, -40);
-
-                // 電量
                 time_mode_battery_label = lv_label_create(bg_time_mode);
-                lv_obj_set_style_text_font(time_mode_battery_label, &lv_font_montserrat_24, 0);
-                lv_obj_align(time_mode_battery_label, LV_ALIGN_BOTTOM_LEFT, 10, -15);
+
+                if (!is_landscape) {
+                    // ================= 📱 直排 Layout (135x240) =================
+                    lv_obj_set_style_text_font(time_mode_hour_label, &micro5_120, 0);
+                    lv_obj_align(time_mode_hour_label, LV_ALIGN_TOP_MID, 0, 30);
+
+                    lv_obj_set_style_text_font(time_mode_min_label, &micro5_120, 0);
+                    lv_obj_align(time_mode_min_label, LV_ALIGN_TOP_MID, 0, 100);
+
+                    lv_obj_set_style_text_font(time_mode_date_label, &lv_font_montserrat_24, 0);
+                    lv_obj_align(time_mode_date_label, LV_ALIGN_BOTTOM_LEFT, 10, -40);
+
+                    lv_obj_set_style_text_font(time_mode_battery_label, &lv_font_montserrat_24, 0);
+                    lv_obj_align(time_mode_battery_label, LV_ALIGN_BOTTOM_LEFT, 10, -15);
+                } else {
+                    // ================= 📟 橫排 Layout (240x135) =================
+                    // 橫放時高度只有 135，micro5_120 剛好填滿中央，時分左右排列
+                    lv_obj_set_style_text_font(time_mode_hour_label, &micro5_120, 0);
+                    lv_obj_align(time_mode_hour_label, LV_ALIGN_LEFT_MID, 15, -20);
+
+                    lv_obj_set_style_text_font(time_mode_min_label, &micro5_120, 0);
+                    lv_obj_align(time_mode_min_label, LV_ALIGN_LEFT_MID, 112, -20);
+
+                    // 右側或頂部放日期與電量
+                    lv_obj_set_style_text_font(time_mode_date_label, &lv_font_montserrat_24, 0);
+                    lv_obj_align(time_mode_date_label, LV_ALIGN_BOTTOM_LEFT, 15, -30);
+
+                    lv_obj_set_style_text_font(time_mode_battery_label, &lv_font_montserrat_24, 0);
+                    lv_obj_align(time_mode_battery_label, LV_ALIGN_BOTTOM_LEFT, 15, -8);
+                }
             }
             lv_obj_remove_flag(bg_time_mode, LV_OBJ_FLAG_HIDDEN);
 
-            update_clock_display();                            // 刷新資訊
-            clock_is_bright = true;                            // 👈 原本是 false，改為 true
-            clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;  // 👈 原本是 0，改為開始倒數
+            update_clock_display();  // 刷新資訊
+            // clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;  // 👈 原本是 0，改為開始倒數
             auto backlight = Board::GetInstance().GetBacklight();
-            if (backlight)
-                backlight->SetBrightness(
-                    current_max_brightness);  // 👈 原本是 BRIGHTNESS_DIM，改為 100
+            if (backlight) {
+                if (clock_is_bright) {
+                    backlight->SetBrightness(current_max_brightness);
+                } else {
+                    backlight->SetBrightness(BRIGHTNESS_DIM);
+                }
+            }
             return;
         } else if (current_ui_mode == 6) {
             // ==================== 【天氣模式】 ====================
             if (!bg_weather_mode) {
+                int cur_w = lv_display_get_horizontal_resolution(lv_display_get_default());
+                int cur_h = lv_display_get_vertical_resolution(lv_display_get_default());
+
                 bg_weather_mode = lv_obj_create(lv_scr_act());
-                lv_obj_set_size(bg_weather_mode, LCD_W, LCD_H);
+                lv_obj_set_size(bg_weather_mode, cur_w, cur_h);
                 lv_obj_set_style_border_width(bg_weather_mode, 0, 0);
                 lv_obj_set_style_pad_all(bg_weather_mode, 0, 0);
                 lv_obj_clear_flag(bg_weather_mode, LV_OBJ_FLAG_SCROLLABLE);
                 lv_obj_align(bg_weather_mode, LV_ALIGN_TOP_LEFT, 0, 0);
                 lv_obj_set_style_radius(bg_weather_mode, 0, 0);
 
-                // 左側圖示「畫布容器」
                 weather_icon_container = lv_obj_create(bg_weather_mode);
-                lv_obj_set_size(weather_icon_container, 120, 120);
-                lv_obj_set_style_bg_opa(weather_icon_container, LV_OPA_TRANSP, 0);  // 透明底
+                lv_obj_set_style_bg_opa(weather_icon_container, LV_OPA_TRANSP, 0);
                 lv_obj_set_style_border_width(weather_icon_container, 0, 0);
                 lv_obj_clear_flag(weather_icon_container, LV_OBJ_FLAG_SCROLLABLE);
-                lv_obj_align(weather_icon_container, LV_ALIGN_TOP_MID, 0, 15);
 
-                // 右上：氣溫與狀態 (兩行)
                 weather_current_label = lv_label_create(bg_weather_mode);
-                lv_obj_set_style_text_font(weather_current_label, &lv_font_montserrat_24, 0);
-                lv_obj_set_style_text_line_space(weather_current_label, 2, 0);
-                lv_obj_align(weather_current_label, LV_ALIGN_LEFT_MID, 10, 18);
-
-                // 右下：最高與最低溫
                 weather_hilo_label = lv_label_create(bg_weather_mode);
-                lv_obj_set_style_text_line_space(weather_hilo_label, -5, 0);
-                lv_obj_align(weather_hilo_label, LV_ALIGN_BOTTOM_LEFT, 10, -10);
+
+                if (!is_landscape) {
+                    // 📱 直排：圖標在上，資訊在下
+                    lv_obj_set_size(weather_icon_container, 120, 120);
+                    lv_obj_align(weather_icon_container, LV_ALIGN_TOP_MID, 0, 15);
+
+                    lv_obj_set_style_text_font(weather_current_label, &lv_font_montserrat_24, 0);
+                    lv_obj_align(weather_current_label, LV_ALIGN_LEFT_MID, 10, 18);
+
+                    lv_obj_align(weather_hilo_label, LV_ALIGN_BOTTOM_LEFT, 10, -10);
+                    lv_obj_set_style_text_line_space(weather_hilo_label, -6, 0);
+
+                } else {
+                    // 📟 橫排：圖標在左（約 100x100），溫度與細節在右
+                    lv_obj_set_size(weather_icon_container, 100, 100);
+                    lv_obj_align(weather_icon_container, LV_ALIGN_LEFT_MID, 5, -8);
+
+                    lv_obj_set_style_text_font(weather_current_label, &lv_font_montserrat_24, 0);
+                    lv_obj_align(weather_current_label, LV_ALIGN_BOTTOM_LEFT, 16, -16);
+
+                    lv_obj_align(weather_hilo_label, LV_ALIGN_LEFT_MID, 110, -12);
+                    lv_obj_set_style_text_line_space(weather_hilo_label, -6, 0);
+                }
             }
             lv_obj_remove_flag(bg_weather_mode, LV_OBJ_FLAG_HIDDEN);
-
-            // 強制重繪一次圖標
             memset(last_drawn_weather, 0, sizeof(last_drawn_weather));
             update_clock_display();
-
-            clock_is_bright = true;                            // 👈 原本是 false，改為 true
-            clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;  // 👈 原本是 0，改為開始倒數
+            // clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;  // 👈 原本是 0，改為開始倒數
             auto backlight = Board::GetInstance().GetBacklight();
-            if (backlight)
-                backlight->SetBrightness(
-                    current_max_brightness);  // 👈 原本是 BRIGHTNESS_DIM，改為 100
+            if (backlight) {
+                if (clock_is_bright) {
+                    backlight->SetBrightness(current_max_brightness);
+                } else {
+                    backlight->SetBrightness(BRIGHTNESS_DIM);
+                }
+            }
             return;
         } else if (current_ui_mode == 0 || current_ui_mode == 7) {  // --- 退出遊戲，回到 AI ---
             // 恢復臉部顯示
@@ -4272,11 +4448,15 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             lv_obj_remove_flag(avatar_right_eye, LV_OBJ_FLAG_HIDDEN);
             lv_obj_remove_flag(avatar_mouth, LV_OBJ_FLAG_HIDDEN);
             last_avatar_state = (DeviceState)-1;  // 強制刷新臉部
-            clock_is_bright = true;
-            clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
+            // clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
             auto backlight = Board::GetInstance().GetBacklight();
-            if (backlight)
-                backlight->SetBrightness(current_max_brightness);
+            if (backlight) {
+                if (clock_is_bright) {
+                    backlight->SetBrightness(current_max_brightness);
+                } else {
+                    backlight->SetBrightness(BRIGHTNESS_DIM);
+                }
+            }
         }
     }
 
@@ -4532,24 +4712,69 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             // =======================================================
 
             // =======================================================
-            // 🔄 智慧螢幕 4 向翻轉引擎 (專為 AtomS3R 正方形螢幕設計)
+            // 🔄 StickS3 智慧螢幕 4 向翻轉引擎 (支援橫排/直排自適應)
             // =======================================================
-            // 將 current_rot 提昇到外層，讓後面的校準引擎也能讀取目前的角度
-            static lv_display_rotation_t current_rot = LV_DISPLAY_ROTATION_0;
-
             if (current_ui_mode == 0 || current_ui_mode == 3 || current_ui_mode == 6) {
                 const int16_t FLIP_THRESHOLD = 5000;
-                lv_display_rotation_t target_rot = current_rot;
+                lv_display_rotation_t target_rot = current_stick_rot;
 
-                if (accel_y < -FLIP_THRESHOLD) {
-                    target_rot = LV_DISPLAY_ROTATION_0;
-                } else if (accel_y > FLIP_THRESHOLD) {
-                    target_rot = LV_DISPLAY_ROTATION_180;
+                if (abs(accel_y) > abs(accel_x)) {
+                    if (accel_y < -FLIP_THRESHOLD) {
+                        target_rot = LV_DISPLAY_ROTATION_0;  // 正向直立
+                    } else if (accel_y > FLIP_THRESHOLD) {
+                        target_rot = LV_DISPLAY_ROTATION_180;  // 倒轉直立
+                    }
+                } else {
+                    if (accel_x > FLIP_THRESHOLD) {
+                        target_rot = LV_DISPLAY_ROTATION_90;  // 橫向
+                    } else if (accel_x < -FLIP_THRESHOLD) {
+                        target_rot = LV_DISPLAY_ROTATION_270;  // 橫向
+                    }
                 }
 
-                if (target_rot != current_rot) {
-                    current_rot = target_rot;
-                    lv_display_set_rotation(lv_display_get_default(), current_rot);
+                if (target_rot != current_stick_rot) {
+                    current_stick_rot = target_rot;
+
+                    // 只有在 0, 3, 6 模式下才會套用橫向 Offset
+                    apply_stick_display_rotation_and_offset(lv_display_get_default(),
+                                                            current_stick_rot);
+
+                    bool new_is_landscape = (target_rot == LV_DISPLAY_ROTATION_90 ||
+                                             target_rot == LV_DISPLAY_ROTATION_270);
+
+                    if (new_is_landscape != is_landscape) {
+                        is_landscape = new_is_landscape;
+                        ESP_LOGI("Orientation", "切換版面為: %s",
+                                 is_landscape ? "橫排 (Landscape)" : "直排 (Portrait)");
+
+                        update_system_layout_for_orientation();
+
+                        if (current_ui_mode == 3 && bg_time_mode) {
+                            lv_obj_del(bg_time_mode);
+                            bg_time_mode = nullptr;
+                            time_mode_hour_label = nullptr;
+                            time_mode_min_label = nullptr;
+                            time_mode_date_label = nullptr;
+                            time_mode_battery_label = nullptr;
+                        }
+
+                        if (current_ui_mode == 6 && bg_weather_mode) {
+                            lv_obj_del(bg_weather_mode);
+                            bg_weather_mode = nullptr;
+                            weather_icon_container = nullptr;
+                            weather_icon_label = nullptr;
+                            weather_current_label = nullptr;
+                            weather_hilo_label = nullptr;
+                            memset(last_drawn_weather, 0, sizeof(last_drawn_weather));
+                        }
+
+                        if (current_ui_mode == 0) {
+                            reset_avatar_geometry();
+                            CustomApp_SetEmotion(current_active_emotion.c_str());
+                        }
+
+                        ui_mode_changed = true;
+                    }
                 }
             }
 
@@ -4579,16 +4804,16 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             int16_t ui_x = 0;
             int16_t ui_y = 0;
 
-            if (current_rot == LV_DISPLAY_ROTATION_0) {
+            if (current_stick_rot == LV_DISPLAY_ROTATION_0) {
                 ui_x = dyn_x;
                 ui_y = dyn_y;
-            } else if (current_rot == LV_DISPLAY_ROTATION_90) {
+            } else if (current_stick_rot == LV_DISPLAY_ROTATION_90) {
                 ui_x = -dyn_y;
                 ui_y = dyn_x;
-            } else if (current_rot == LV_DISPLAY_ROTATION_180) {
+            } else if (current_stick_rot == LV_DISPLAY_ROTATION_180) {
                 ui_x = -dyn_x;
                 ui_y = -dyn_y;
-            } else if (current_rot == LV_DISPLAY_ROTATION_270) {
+            } else if (current_stick_rot == LV_DISPLAY_ROTATION_270) {
                 ui_x = dyn_y;
                 ui_y = -dyn_x;
             }
@@ -5879,10 +6104,11 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             update_eye_size_realtime();
 
             lv_obj_set_size(avatar_right_eye, EYE_BASE_W, EYE_BASE_W);
-            lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H);
+            lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, get_cur_eye_pos_r(),
+                         get_cur_eye_pos_h());
 
-            lv_obj_set_size(avatar_mouth, MOUTH_BASE_W - 4, MOUTH_BASE_H);
-            lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
+            lv_obj_set_size(avatar_mouth, get_cur_mouth_width() - 4, MOUTH_BASE_H);
+            lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, get_cur_mouth_pos_h());
         }
 
         // 2. 確保眼球顯示 (任何情緒下聆聽都應該顯示眼球)
@@ -5918,7 +6144,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         lv_obj_t* active_mouth = avatar_mouth;
         int start_h = MOUTH_BASE_H;
         int end_h = 28;  // 預設講話的張口高度
-        int target_w = MOUTH_BASE_W;
+        int target_w = get_cur_mouth_width();
 
         if (current_active_emotion == "laughing") {
             active_mouth = avatar_mouth_laugh;
@@ -5949,12 +6175,12 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         } else if (current_active_emotion == "silly") {
             start_h = 6;
             end_h = 16;
-            target_w = MOUTH_BASE_W + 4;
+            target_w = get_cur_mouth_width() + 4;
         }
 
         // 🎯 【關鍵防彈設計】：每次講話前，強制把嘴巴的寬度與位置校正，無視之前任何動畫的影響！
         lv_obj_set_width(active_mouth, target_w);
-        lv_obj_align(active_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
+        lv_obj_align(active_mouth, LV_ALIGN_CENTER, 0, get_cur_mouth_pos_h());
 
         // 4. 切換正確的嘴巴圖層
         if (active_mouth != avatar_mouth) {
@@ -5995,11 +6221,18 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             }
         }
     } else {  // 進入待機狀態 (首次切換進來時執行一次)
-        if (backlight)
-            backlight->SetBrightness(current_max_brightness);
-
-        clock_is_bright = true;
-        clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
+        auto backlight = Board::GetInstance().GetBacklight();
+        if (backlight) {
+            if (clock_is_bright) {
+                backlight->SetBrightness(current_max_brightness);
+            } else {
+                backlight->SetBrightness(BRIGHTNESS_DIM);
+            }
+        }
+        // 不要無條件覆寫 clock_is_bright = true！
+        if (clock_is_bright && clock_dim_countdown == 0) {
+            clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
+        }
 
         current_active_emotion = "neutral";  // 重置回普通待機
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
@@ -6048,8 +6281,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         if (avatar_sleepy_z)
             lv_obj_add_flag(avatar_sleepy_z, LV_OBJ_FLAG_HIDDEN);
 
-        lv_obj_set_size(avatar_mouth, MOUTH_BASE_W, MOUTH_BASE_H);
-        lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, MOUTH_POS_H);
+        lv_obj_set_size(avatar_mouth, get_cur_mouth_width(), MOUTH_BASE_H);
+        lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 0, get_cur_mouth_pos_h());
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
 
         start_blink_animation();
@@ -6116,10 +6349,13 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
                         int color_idx = cJSON_GetObjectItem(json, "avatar_color")
                                             ? cJSON_GetObjectItem(json, "avatar_color")->valueint
                                             : 1;
-                        const char* theme_str =
-                            cJSON_GetObjectItem(json, "theme")
-                                ? cJSON_GetObjectItem(json, "theme")->valuestring
-                                : "dark";
+                        cJSON* active_theme_item = cJSON_GetObjectItem(json, "active_theme");
+                        const char* theme_str = "dark";
+                        if (active_theme_item && active_theme_item->valuestring) {
+                            theme_str = active_theme_item->valuestring;
+                        } else if (cJSON_GetObjectItem(json, "theme")) {
+                            theme_str = cJSON_GetObjectItem(json, "theme")->valuestring;
+                        }
 
                         ESP_LOGI("MQTT",
                                  "⚙️ 收到即時設定更新: Vol:%d, Bright:%d, Theme:%s, Color:%d", vol,
@@ -6278,6 +6514,7 @@ static void mqtt_init_task(void* pvParameters) {
 
 // --- 鉤子 1：初始化 UI ---
 void CustomApp_InitUI(lv_obj_t* parent) {
+    g_app_parent = parent;
     srand(esp_random());
     // 設定系統時區為香港時間 (UTC+8)
     setenv("TZ", "HKT-8", 1);
@@ -6308,7 +6545,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     lv_obj_set_style_pad_all(avatar_left_eye, 0, 0);
     lv_obj_set_style_border_width(avatar_left_eye, 0, 0);
     lv_obj_clear_flag(avatar_left_eye, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H);
+    lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, get_cur_eye_pos_l(), get_cur_eye_pos_h());
 
     left_eye_ball = lv_obj_create(avatar_left_eye);
     // 設定為眼白的 45% 寬、55% 高 (橢圓形瞳孔最可愛)
@@ -6339,7 +6576,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     lv_obj_set_style_pad_all(avatar_right_eye, 0, 0);
     lv_obj_set_style_border_width(avatar_right_eye, 0, 0);
     lv_obj_clear_flag(avatar_right_eye, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H);
+    lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, get_cur_eye_pos_r(), get_cur_eye_pos_h());
 
     right_eye_ball = lv_obj_create(avatar_right_eye);
     lv_obj_set_size(right_eye_ball, lv_pct(EYE_BALL_W), lv_pct(EYE_BALL_H));
@@ -6363,7 +6600,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     lv_obj_clear_flag(right_eye_highlight, LV_OBJ_FLAG_SCROLLABLE);
 
     avatar_mouth = lv_obj_create(face_container);
-    lv_obj_set_size(avatar_mouth, MOUTH_BASE_W, MOUTH_BASE_H);
+    lv_obj_set_size(avatar_mouth, get_cur_mouth_width(), MOUTH_BASE_H);
     lv_obj_set_style_radius(avatar_mouth, 8, 0);
     lv_obj_set_style_bg_color(avatar_mouth, avatar_theme_color, 0);
     lv_obj_set_style_border_width(avatar_mouth, 0, 0);
@@ -7086,8 +7323,10 @@ void CustomApp_SetEmotion(const char* emotion) {
     if (emo_str == "loving") {
         // 溫柔笑眼
         set_eye_size(EYE_BASE_W - 1, 10);
-        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
-        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, get_cur_eye_pos_l(),
+                     get_cur_eye_pos_h() - 6);
+        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, get_cur_eye_pos_r(),
+                     get_cur_eye_pos_h() - 6);
         if (left_eye_ball)
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
@@ -7157,15 +7396,17 @@ void CustomApp_SetEmotion(const char* emotion) {
         }
     } else if (emo_str == "delicious") {
         set_eye_size(EYE_BASE_W, 10);  // 眼睛瞇起來哭
-        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
-        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, get_cur_eye_pos_l(),
+                     get_cur_eye_pos_h() - 6);
+        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, get_cur_eye_pos_r(),
+                     get_cur_eye_pos_h() - 6);
         if (left_eye_ball)
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
             lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
 
-        lv_obj_set_size(avatar_mouth, MOUTH_BASE_W, 20);  // 嘴巴張大哭
-        lv_obj_set_style_radius(avatar_mouth, 8, 0);      // 嘴巴帶點圓角
+        lv_obj_set_size(avatar_mouth, get_cur_mouth_width(), 20);  // 嘴巴張大哭
+        lv_obj_set_style_radius(avatar_mouth, 8, 0);               // 嘴巴帶點圓角
 
         if (avatar_embrassing) {
             lv_obj_remove_flag(avatar_embrassing, LV_OBJ_FLAG_HIDDEN);
@@ -7189,14 +7430,16 @@ void CustomApp_SetEmotion(const char* emotion) {
     } else if (emo_str == "confused") {
         // 無奈表情：左眼變扁、右眼縮小，嘴巴變成一條扁平橫線
         set_eye_size(EYE_BASE_W + 6, 9);
-        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 1);
-        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 1);
+        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, get_cur_eye_pos_l(),
+                     get_cur_eye_pos_h() - 1);
+        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, get_cur_eye_pos_r(),
+                     get_cur_eye_pos_h() - 1);
         if (left_eye_ball)
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
             lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
 
-        lv_obj_set_size(avatar_mouth, MOUTH_BASE_W + 6, MOUTH_BASE_H);  // 扁嘴
+        lv_obj_set_size(avatar_mouth, get_cur_mouth_width() + 6, MOUTH_BASE_H);  // 扁嘴
         if (avatar_confuse) {
             lv_obj_remove_flag(avatar_confuse, LV_OBJ_FLAG_HIDDEN);
         }
@@ -7227,8 +7470,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         }
     } else if (emo_str == "embarrassed") {
         set_eye_size(EYE_BASE_W - 1, 10);
-        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
-        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, get_cur_eye_pos_l(),
+                     get_cur_eye_pos_h() - 6);
+        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, get_cur_eye_pos_r(),
+                     get_cur_eye_pos_h() - 6);
         if (left_eye_ball)
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
@@ -7240,7 +7485,7 @@ void CustomApp_SetEmotion(const char* emotion) {
         }
     } else if (emo_str == "thinking") {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);  // 統一重置
-        lv_obj_set_size(avatar_mouth, MOUTH_BASE_W, MOUTH_BASE_H);
+        lv_obj_set_size(avatar_mouth, get_cur_mouth_width(), MOUTH_BASE_H);
 
         lv_anim_t a;
         lv_anim_init(&a);
@@ -7256,7 +7501,8 @@ void CustomApp_SetEmotion(const char* emotion) {
         lv_anim_init(&b);
         lv_anim_set_var(&b, avatar_mouth);
         lv_anim_set_exec_cb(&b, (lv_anim_exec_xcb_t)lv_obj_set_width);
-        lv_anim_set_values(&b, MOUTH_BASE_W, MOUTH_BASE_W + 6);  // 從睜眼縮小到 10px 瞇瞇眼
+        lv_anim_set_values(&b, get_cur_mouth_width(),
+                           get_cur_mouth_width() + 6);  // 從睜眼縮小到 10px 瞇瞇眼
         lv_anim_set_duration(&b, 240);
         lv_anim_set_path_cb(&b, lv_anim_path_bounce);
         lv_anim_set_repeat_count(&b, 1);  // 不做 playback，閉上後停在 10px
@@ -7277,8 +7523,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         }
     } else if (emo_str == "shocked") {
         set_eye_size(EYE_BASE_W * 1.2, EYE_BASE_H * 1.1);
-        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L - 1, EYE_POS_H - 1);
-        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R + 1, EYE_POS_H - 1);
+        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, get_cur_eye_pos_l() - 1,
+                     get_cur_eye_pos_h() - 1);
+        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, get_cur_eye_pos_r() + 1,
+                     get_cur_eye_pos_h() - 1);
         lv_obj_set_style_radius(avatar_left_eye, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_radius(avatar_right_eye, LV_RADIUS_CIRCLE, 0);
 
@@ -7294,12 +7542,14 @@ void CustomApp_SetEmotion(const char* emotion) {
         if (avatar_silly_tongue) {
             lv_obj_remove_flag(avatar_silly_tongue, LV_OBJ_FLAG_HIDDEN);
         }
-        lv_obj_set_size(avatar_mouth, MOUTH_BASE_W + 4, MOUTH_BASE_H);
+        lv_obj_set_size(avatar_mouth, get_cur_mouth_width() + 4, MOUTH_BASE_H);
         lv_obj_set_style_radius(avatar_mouth, 8, 0);
     } else if (emo_str == "happy") {
         set_eye_size(EYE_BASE_W - 1, 10);
-        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
-        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, get_cur_eye_pos_l(),
+                     get_cur_eye_pos_h() - 6);
+        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, get_cur_eye_pos_r(),
+                     get_cur_eye_pos_h() - 6);
         if (left_eye_ball)
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
@@ -7315,8 +7565,10 @@ void CustomApp_SetEmotion(const char* emotion) {
         }
     } else if (emo_str == "laughing") {
         set_eye_size(EYE_BASE_W, 10);
-        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, EYE_POS_L, EYE_POS_H - 6);
-        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, EYE_POS_R, EYE_POS_H - 6);
+        lv_obj_align(avatar_left_eye, LV_ALIGN_CENTER, get_cur_eye_pos_l(),
+                     get_cur_eye_pos_h() - 6);
+        lv_obj_align(avatar_right_eye, LV_ALIGN_CENTER, get_cur_eye_pos_r(),
+                     get_cur_eye_pos_h() - 6);
         if (left_eye_ball)
             lv_obj_add_flag(left_eye_ball, LV_OBJ_FLAG_HIDDEN);
         if (right_eye_ball)
@@ -7355,7 +7607,7 @@ void CustomApp_SetEmotion(const char* emotion) {
 
     } else if (emo_str == "winking") {
         set_eye_size(EYE_BASE_W, EYE_BASE_H);
-        lv_obj_set_size(avatar_mouth, MOUTH_BASE_W - 4, MOUTH_BASE_H);
+        lv_obj_set_size(avatar_mouth, get_cur_mouth_width() - 4, MOUTH_BASE_H);
         if (right_eye_ball)
             lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
 
@@ -7388,7 +7640,7 @@ void CustomApp_SetEmotion(const char* emotion) {
             lv_obj_add_flag(right_eye_ball, LV_OBJ_FLAG_HIDDEN);
 
         lv_obj_set_size(avatar_mouth, 12, 12);
-        lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 2, MOUTH_POS_H);
+        lv_obj_align(avatar_mouth, LV_ALIGN_CENTER, 2, get_cur_mouth_pos_h());
         if (avatar_kissy) {
             lv_obj_set_style_radius(avatar_mouth, LV_RADIUS_CIRCLE, 0);
             lv_obj_remove_flag(avatar_kissy, LV_OBJ_FLAG_HIDDEN);
