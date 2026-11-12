@@ -5652,25 +5652,38 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
                         int color_idx = cJSON_GetObjectItem(json, "avatar_color")
                                             ? cJSON_GetObjectItem(json, "avatar_color")->valueint
                                             : 1;
-                        const char* theme_str =
-                            cJSON_GetObjectItem(json, "theme")
-                                ? cJSON_GetObjectItem(json, "theme")->valuestring
-                                : "dark";
+                        cJSON* active_theme_item = cJSON_GetObjectItem(json, "active_theme");
+                        const char* theme_str = "dark";
+                        if (active_theme_item && active_theme_item->valuestring) {
+                            theme_str = active_theme_item->valuestring;
+                        } else if (cJSON_GetObjectItem(json, "theme")) {
+                            theme_str = cJSON_GetObjectItem(json, "theme")->valuestring;
+                        }
+                        // 額外保險：如果萬一拿到了 "auto"，根據當前香港時間做本地兜底
+                        std::string safe_theme = theme_str;
+                        if (safe_theme == "auto") {
+                            time_t now;
+                            struct tm timeinfo;
+                            time(&now);
+                            localtime_r(&now, &timeinfo);
+                            safe_theme =
+                                (timeinfo.tm_hour >= 7 && timeinfo.tm_hour < 19) ? "light" : "dark";
+                        }
 
                         ESP_LOGI("MQTT",
                                  "⚙️ 收到即時設定更新: Vol:%d, Bright:%d, Theme:%s, Color:%d", vol,
-                                 bright, theme_str, color_idx);
+                                 bright, safe_theme.c_str(), color_idx);
 
                         // 安排在主執行緒中更新 UI 與硬體
                         Application::GetInstance().Schedule(
-                            [vol, bright, color_idx, theme_str_copy = std::string(theme_str)]() {
+                            [vol, bright, color_idx, theme_str_copy = safe_theme]() {
                                 // 1. 音量
                                 auto codec = Board::GetInstance().GetAudioCodec();
                                 if (codec)
                                     codec->SetOutputVolume(vol);
 
                                 // 2. 亮度
-                                current_max_brightness = bright;  // 更新全域記憶
+                                current_max_brightness = bright;
                                 auto backlight = Board::GetInstance().GetBacklight();
                                 if (backlight)
                                     backlight->SetBrightness(bright);
@@ -5737,10 +5750,13 @@ static void mqtt_init_task(void* pvParameters) {
                                 cJSON_GetObjectItem(json, "avatar_color")
                                     ? cJSON_GetObjectItem(json, "avatar_color")->valueint
                                     : 1;
-                            const char* theme_str =
-                                cJSON_GetObjectItem(json, "theme")
-                                    ? cJSON_GetObjectItem(json, "theme")->valuestring
-                                    : "dark";
+                            cJSON* active_theme_item = cJSON_GetObjectItem(json, "active_theme");
+                            const char* theme_str = "dark";
+                            if (active_theme_item && active_theme_item->valuestring) {
+                                theme_str = active_theme_item->valuestring;
+                            } else if (cJSON_GetObjectItem(json, "theme")) {
+                                theme_str = cJSON_GetObjectItem(json, "theme")->valuestring;
+                            }
 
                             ESP_LOGI(
                                 "Settings",
