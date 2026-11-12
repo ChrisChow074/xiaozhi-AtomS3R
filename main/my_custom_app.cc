@@ -3106,10 +3106,13 @@ static void slot_stop_reel(int col) {
 }
 
 // =======================================================
-// 🖥️ 小智原生 UI 深度適配引擎 (將狀態列、字幕列拉滿 240px)
+// 🖥️ 小智原生 UI 深度適配引擎 (徹底修復左右雙色撕裂問題)
 // =======================================================
 static void update_system_layout_for_orientation() {
     lv_display_t* disp = lv_display_get_default();
+    if (!disp)
+        return;
+
     int cur_w = lv_display_get_horizontal_resolution(disp);
     int cur_h = lv_display_get_vertical_resolution(disp);
 
@@ -3117,61 +3120,83 @@ static void update_system_layout_for_orientation() {
     if (!scr)
         return;
 
-    // 1. 根螢幕設為當前尺寸
+    // 1. 強制重設最底層螢幕的尺寸，並消除所有外邊距
     lv_obj_set_size(scr, cur_w, cur_h);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-    // 2. 遍歷活躍螢幕的所有子物件（小智的 top_bar, status_bar, bottom_bar 都掛在這裡）
+    // 2. 遍歷活躍螢幕的所有子物件
     uint32_t cnt = lv_obj_get_child_cnt(scr);
     for (uint32_t i = 0; i < cnt; i++) {
         lv_obj_t* child = lv_obj_get_child(scr, i);
         if (!child)
             continue;
 
-        // A. 如果是全螢幕背景/臉部容器
+        // 🌟 徹底消除所有物件的滾動條（右邊那條灰線就是它造成的！）
+        lv_obj_clear_flag(child, LV_OBJ_FLAG_SCROLLABLE);
+
+        // A. 我們的臉部總容器
         if (child == face_container) {
             lv_obj_set_size(child, cur_w, cur_h);
             lv_obj_align(child, LV_ALIGN_CENTER, 0, 0);
             continue;
         }
 
-        // B. 判斷是否為頂部狀態列 (掛在頂部的物件)
-        // 頂部狀態列的特徵：高度較小，且對齊在 TOP
-        if (lv_obj_get_y(child) <= 10 && lv_obj_get_height(child) < 40) {
+        // B. 🌟 關鍵修復：小智的背景主容器 (container_)
+        // 特徵：它既不是頂部狀態列，也不是底部字幕，而且高度接近全螢幕
+        // 必須強制把它拉伸到滿版 240x135，否則右邊就會露出底層淺色！
+        if (lv_obj_get_height(child) > 50 && lv_obj_get_y(child) <= 10) {
+            lv_obj_set_size(child, cur_w, cur_h);
+            lv_obj_set_pos(child, 0, 0);
+        }
+
+        // C. 頂部狀態列 (top_bar_ 與 status_bar_)
+        // 特徵：高度較小 (< 45px)，對齊在頂部
+        if (lv_obj_get_y(child) <= 10 && lv_obj_get_height(child) < 45) {
             lv_obj_set_width(child, cur_w);
             lv_obj_align(child, LV_ALIGN_TOP_MID, 0, 0);
-            // 讓裡面的文字標籤居中
-            if (lv_obj_get_child_cnt(child) > 0) {
-                for (uint32_t j = 0; j < lv_obj_get_child_cnt(child); j++) {
-                    lv_obj_t* sub = lv_obj_get_child(child, j);
-                    // 如果是文字標籤，寬度設為 80% 並重新置中
+
+            // 讓狀態列裡面的時間標籤 (status_label_) 或通知標籤在 240px 置中！
+            uint32_t sub_cnt = lv_obj_get_child_cnt(child);
+            for (uint32_t j = 0; j < sub_cnt; j++) {
+                lv_obj_t* sub = lv_obj_get_child(child, j);
+                if (sub) {
+                    lv_obj_clear_flag(sub, LV_OBJ_FLAG_SCROLLABLE);
+                    // 如果是文字標籤，寬度拉伸並重新置中
                     if (lv_obj_check_type(sub, &lv_label_class)) {
-                        lv_obj_set_width(sub, cur_w * 0.8);
+                        lv_obj_set_width(sub, cur_w * 0.75);
                         lv_obj_align(sub, LV_ALIGN_CENTER, 0, 0);
                     }
                 }
             }
         }
 
-        // C. 判斷是否為底部字幕列 (bottom_bar_)
-        // 特徵：對齊在螢幕底部
+        // D. 底部字幕列 (bottom_bar_)
         if (lv_obj_get_y(child) > (cur_h / 2)) {
             lv_obj_set_width(child, cur_w);
             lv_obj_align(child, LV_ALIGN_BOTTOM_MID, 0, 0);
-            lv_obj_clear_flag(child, LV_OBJ_FLAG_SCROLLABLE);  // 消除左邊灰色的滾動條！
 
-            // 調整裡面的字幕 label (chat_message_label_)
-            for (uint32_t j = 0; j < lv_obj_get_child_cnt(child); j++) {
+            uint32_t sub_cnt = lv_obj_get_child_cnt(child);
+            for (uint32_t j = 0; j < sub_cnt; j++) {
                 lv_obj_t* sub = lv_obj_get_child(child, j);
                 if (sub) {
-                    lv_obj_set_width(sub, cur_w - 16);  // 寬度拉滿到 224px
+                    lv_obj_clear_flag(sub, LV_OBJ_FLAG_SCROLLABLE);
+                    lv_obj_set_width(sub, cur_w - 16);
                     lv_obj_align(sub, LV_ALIGN_CENTER, 0, 0);
                 }
             }
         }
     }
 
-    // 3. 立即強制觸發佈局重繪
+    // 3. 確保小智傳入的 g_app_parent 也是滿版
+    if (g_app_parent && g_app_parent != scr) {
+        lv_obj_set_size(g_app_parent, cur_w, cur_h);
+        lv_obj_set_pos(g_app_parent, 0, 0);
+        lv_obj_clear_flag(g_app_parent, LV_OBJ_FLAG_SCROLLABLE);
+    }
+
+    // 4. 強制 LVGL 立即刷新佈局並標記全螢幕重繪
     lv_obj_update_layout(scr);
+    lv_obj_invalidate(scr);
 }
 
 static void reset_avatar_geometry() {
@@ -4365,10 +4390,10 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
                     // 右側或頂部放日期與電量
                     lv_obj_set_style_text_font(time_mode_date_label, &lv_font_montserrat_24, 0);
-                    lv_obj_align(time_mode_date_label, LV_ALIGN_BOTTOM_LEFT, 15, -30);
+                    lv_obj_align(time_mode_date_label, LV_ALIGN_BOTTOM_LEFT, 15, -32);
 
                     lv_obj_set_style_text_font(time_mode_battery_label, &lv_font_montserrat_24, 0);
-                    lv_obj_align(time_mode_battery_label, LV_ALIGN_BOTTOM_LEFT, 15, -8);
+                    lv_obj_align(time_mode_battery_label, LV_ALIGN_BOTTOM_LEFT, 15, -7);
                 }
             }
             lv_obj_remove_flag(bg_time_mode, LV_OBJ_FLAG_HIDDEN);
@@ -4748,6 +4773,15 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                                  is_landscape ? "橫排 (Landscape)" : "直排 (Portrait)");
 
                         update_system_layout_for_orientation();
+
+                        if (current_ui_mode == 0) {
+                            if (face_container) {
+                                lv_obj_move_foreground(
+                                    face_container);  // 👈 確保臉部不會被小智的背景層壓住！
+                            }
+                            reset_avatar_geometry();
+                            CustomApp_SetEmotion(current_active_emotion.c_str());
+                        }
 
                         if (current_ui_mode == 3 && bg_time_mode) {
                             lv_obj_del(bg_time_mode);
@@ -6357,20 +6391,31 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
                             theme_str = cJSON_GetObjectItem(json, "theme")->valuestring;
                         }
 
+                        // 額外保險：如果萬一拿到了 "auto"，根據當前香港時間做本地兜底
+                        std::string safe_theme = theme_str;
+                        if (safe_theme == "auto") {
+                            time_t now;
+                            struct tm timeinfo;
+                            time(&now);
+                            localtime_r(&now, &timeinfo);
+                            safe_theme =
+                                (timeinfo.tm_hour >= 7 && timeinfo.tm_hour < 19) ? "light" : "dark";
+                        }
+
                         ESP_LOGI("MQTT",
                                  "⚙️ 收到即時設定更新: Vol:%d, Bright:%d, Theme:%s, Color:%d", vol,
-                                 bright, theme_str, color_idx);
+                                 bright, safe_theme.c_str(), color_idx);
 
                         // 安排在主執行緒中更新 UI 與硬體
                         Application::GetInstance().Schedule(
-                            [vol, bright, color_idx, theme_str_copy = std::string(theme_str)]() {
+                            [vol, bright, color_idx, theme_str_copy = safe_theme]() {
                                 // 1. 音量
                                 auto codec = Board::GetInstance().GetAudioCodec();
                                 if (codec)
                                     codec->SetOutputVolume(vol);
 
                                 // 2. 亮度
-                                current_max_brightness = bright;  // 更新全域記憶
+                                current_max_brightness = bright;
                                 auto backlight = Board::GetInstance().GetBacklight();
                                 if (backlight)
                                     backlight->SetBrightness(bright);
@@ -6438,10 +6483,13 @@ static void mqtt_init_task(void* pvParameters) {
                                 cJSON_GetObjectItem(json, "avatar_color")
                                     ? cJSON_GetObjectItem(json, "avatar_color")->valueint
                                     : 1;
-                            const char* theme_str =
-                                cJSON_GetObjectItem(json, "theme")
-                                    ? cJSON_GetObjectItem(json, "theme")->valuestring
-                                    : "dark";
+                            cJSON* active_theme_item = cJSON_GetObjectItem(json, "active_theme");
+                            const char* theme_str = "dark";
+                            if (active_theme_item && active_theme_item->valuestring) {
+                                theme_str = active_theme_item->valuestring;
+                            } else if (cJSON_GetObjectItem(json, "theme")) {
+                                theme_str = cJSON_GetObjectItem(json, "theme")->valuestring;
+                            }
 
                             ESP_LOGI(
                                 "Settings",
