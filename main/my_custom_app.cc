@@ -875,7 +875,7 @@ static void update_clock_display() {
         // ==========================================
         if (is_landscape) {
             int base_x = 100;      // StickS3 橫向時的基準 X 座標
-            int shift_pixels = 8;  // 【你可以調教這裡】配合 micro5_120，每多一個 '1' 往左退幾格像素
+            int shift_pixels = 2;  // 【你可以調教這裡】配合 micro5_120，每多一個 '1' 往左退幾格像素
 
             // 檢查小時的十位數是不是 '1' (例如: 10, 11, 12)
             if (hour_str[0] == '1') {
@@ -967,6 +967,7 @@ static void update_clock_display() {
                 lv_label_set_text_fmt(weather_current_label, "%s\n%d°C", weather_desc,
                                       weather_temp_cur);
             }
+
             // 最高低溫
             lv_label_set_text_fmt(weather_hilo_label, "High: %d°C\nLow: %d°C", weather_temp_max,
                                   weather_temp_min);
@@ -3533,7 +3534,7 @@ static void apply_weather_mode_layout() {
 
     if (!is_landscape) {
         lv_obj_set_size(weather_icon_container, 120, 120);
-        lv_obj_align(weather_icon_container, LV_ALIGN_TOP_MID, 0, 20);
+        lv_obj_align(weather_icon_container, LV_ALIGN_TOP_MID, 0, 14);
 
         lv_obj_set_style_text_font(weather_current_label, &lv_font_montserrat_24, 0);
         lv_obj_align(weather_current_label, LV_ALIGN_LEFT_MID, 10, 24);
@@ -3542,12 +3543,12 @@ static void apply_weather_mode_layout() {
         lv_obj_set_style_text_line_space(weather_hilo_label, -6, 0);
     } else {
         lv_obj_set_size(weather_icon_container, 100, 100);
-        lv_obj_align(weather_icon_container, LV_ALIGN_LEFT_MID, 5, -8);
+        lv_obj_align(weather_icon_container, LV_ALIGN_LEFT_MID, 5, -18);
 
         lv_obj_set_style_text_font(weather_current_label, &lv_font_montserrat_24, 0);
-        lv_obj_align(weather_current_label, LV_ALIGN_BOTTOM_LEFT, 16, -16);
+        lv_obj_align(weather_current_label, LV_ALIGN_BOTTOM_LEFT, 16, -12);
 
-        lv_obj_align(weather_hilo_label, LV_ALIGN_LEFT_MID, 110, -12);
+        lv_obj_align(weather_hilo_label, LV_ALIGN_LEFT_MID, 110, -8);
         lv_obj_set_style_text_line_space(weather_hilo_label, -6, 0);
     }
 }
