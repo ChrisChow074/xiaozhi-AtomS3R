@@ -79,9 +79,10 @@ static void apply_stick_display_rotation_and_offset(lv_display_t* disp, lv_displ
 #define IR_TX_GPIO_NUM 46  // 發射 TX
 
 // ==========================================
-// 天氣模式專屬變數
+// 時間模式、天氣模式變數
 // ==========================================
 LV_FONT_DECLARE(micro5_120);
+LV_FONT_DECLARE(micro5_105);
 
 // 1. 時間模式變數
 static lv_obj_t* bg_time_mode = nullptr;
@@ -869,6 +870,31 @@ static void update_clock_display() {
     }
     if (time_mode_min_label) {
         lv_label_set_text(time_mode_min_label, min_str);
+        // ==========================================
+        // 🌟 動態排版：只在橫向時，針對數字 '1' 進行左移 (字距微調)
+        // ==========================================
+        if (is_landscape) {
+            int base_x = 100;      // StickS3 橫向時的基準 X 座標
+            int shift_pixels = 8;  // 【你可以調教這裡】配合 micro5_120，每多一個 '1' 往左退幾格像素
+
+            // 檢查小時的十位數是不是 '1' (例如: 10, 11, 12)
+            if (hour_str[0] == '1') {
+                base_x = base_x - shift_pixels;
+            }
+            // 檢查小時的個位數是不是 '1' (例如: 01, 11)
+            if (hour_str[1] == '1') {
+                base_x = base_x - shift_pixels;
+            }
+            if (min_str[0] == '1') {
+                base_x = base_x - shift_pixels;
+            }
+            if (min_str[1] == '1') {
+                base_x = base_x - shift_pixels;
+            }
+
+            // 重新把新的 X 座標套用到分鐘標籤上
+            lv_obj_align(time_mode_min_label, LV_ALIGN_LEFT_MID, base_x, -23);
+        }
     }
     if (time_mode_date_label) {
         lv_label_set_text(time_mode_date_label, date_str);
@@ -970,17 +996,18 @@ enum AppIndex {
 };
 
 enum GameIndex {
-    GAME_SPACE = 0,  // 太空侵略者
-    GAME_SLOT,       // 老虎機
-    GAME_TICTACTOE,  // 過三關
-    GAME_BREAKOUT,   // 打磚塊
-    GAME_2048,       // 2048
-    GAME_SNAKE,      // 貪食蛇
-    GAME_MAX         // 自動計算總數
+    GAME_TETRIS = 0,  // 俄羅斯方塊
+    GAME_SPACE,       // 太空侵略者
+    GAME_SLOT,        // 老虎機
+    GAME_TICTACTOE,   // 過三關
+    GAME_BREAKOUT,    // 打磚塊
+    GAME_2048,        // 2048
+    GAME_SNAKE,       // 貪食蛇
+    GAME_MAX          // 自動計算總數
 };
 
 static int app_menu_selection = APP_BWA;
-static int game_menu_selection = GAME_SPACE;
+static int game_menu_selection = GAME_TETRIS;
 
 // ==========================================
 // 水平儀 (Spirit Level) 系統變數
@@ -1563,6 +1590,341 @@ static void draw_one_mark_six_ball() {
 }
 
 // ==========================================
+//       俄羅斯方塊 (Tetris) 系統變數與引擎
+// ==========================================
+#define TETRIS_COLS 10
+#define TETRIS_ROWS 20
+#define TETRIS_TILT_X 2500  // 左右傾斜靈敏度門檻
+#define TETRIS_TILT_Y 4400  // 前傾加速落下門檻
+
+enum TetrisState {
+    TETRIS_STATE_START,
+    TETRIS_STATE_PLAYING,
+    TETRIS_STATE_PAUSE,
+    TETRIS_STATE_GAMEOVER
+};
+
+static lv_obj_t* bg_tetris = nullptr;
+static lv_obj_t* tetris_cells[TETRIS_ROWS][TETRIS_COLS] = {nullptr};
+static lv_obj_t* tetris_next_cells[4][4] = {nullptr};
+static lv_obj_t* tetris_score_label = nullptr;
+static lv_obj_t* tetris_level_label = nullptr;
+static lv_obj_t* tetris_lines_label = nullptr;
+static lv_obj_t* tetris_overlay = nullptr;
+static lv_obj_t* tetris_overlay_label = nullptr;
+
+static uint8_t tetris_board[TETRIS_ROWS][TETRIS_COLS] = {0};
+static uint32_t tetris_last_rendered[TETRIS_ROWS][TETRIS_COLS];
+static uint32_t tetris_next_last_rendered[4][4];
+
+static TetrisState tetris_game_state = TETRIS_STATE_START;
+static int tetris_score = 0;
+static int tetris_best_score = 0;
+static int tetris_lines = 0;
+static int tetris_level = 1;
+
+static int tetris_cur_type = 0;
+static int tetris_next_type = 0;
+static int tetris_cur_rot = 0;
+static int tetris_cur_x = 3;
+static int tetris_cur_y = 0;
+
+static int tetris_drop_tick = 0;
+static int tetris_lock_tick = 0;
+static int tetris_das_dir = 0;    // -1:左, 0:無, 1:右
+static int tetris_das_ticks = 0;  // 持續傾斜計數
+
+static int tetris_bag[7] = {0, 1, 2, 3, 4, 5, 6};
+static int tetris_bag_idx = 7;
+
+// 7 種經典方塊顏色 (索引 1~7 對應類型 0~6)
+static const uint32_t TETRIS_COLORS[7] = {
+    0x00FFFF,  // 0: I (青)
+    0xFFDD00,  // 1: O (黃)
+    0xAA33FF,  // 2: T (紫)
+    0x00FF66,  // 3: S (綠)
+    0xFF3333,  // 4: Z (紅)
+    0x3377FF,  // 5: J (藍)
+    0xFF8800   // 6: L (橘)
+};
+
+// 7 種方塊 × 4 個旋轉方向 × 4×4 矩陣
+static const uint8_t TETRIS_SHAPES[7][4][4][4] = {
+    // 0: I
+    {{{0, 0, 0, 0}, {1, 1, 1, 1}, {0, 0, 0, 0}, {0, 0, 0, 0}},
+     {{0, 0, 1, 0}, {0, 0, 1, 0}, {0, 0, 1, 0}, {0, 0, 1, 0}},
+     {{0, 0, 0, 0}, {0, 0, 0, 0}, {1, 1, 1, 1}, {0, 0, 0, 0}},
+     {{0, 1, 0, 0}, {0, 1, 0, 0}, {0, 1, 0, 0}, {0, 1, 0, 0}}},
+    // 1: O
+    {{{0, 1, 1, 0}, {0, 1, 1, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}},
+     {{0, 1, 1, 0}, {0, 1, 1, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}},
+     {{0, 1, 1, 0}, {0, 1, 1, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}},
+     {{0, 1, 1, 0}, {0, 1, 1, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}}},
+    // 2: T
+    {{{0, 1, 0, 0}, {1, 1, 1, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}},
+     {{0, 1, 0, 0}, {0, 1, 1, 0}, {0, 1, 0, 0}, {0, 0, 0, 0}},
+     {{0, 0, 0, 0}, {1, 1, 1, 0}, {0, 1, 0, 0}, {0, 0, 0, 0}},
+     {{0, 1, 0, 0}, {1, 1, 0, 0}, {0, 1, 0, 0}, {0, 0, 0, 0}}},
+    // 3: S
+    {{{0, 1, 1, 0}, {1, 1, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}},
+     {{0, 1, 0, 0}, {0, 1, 1, 0}, {0, 0, 1, 0}, {0, 0, 0, 0}},
+     {{0, 0, 0, 0}, {0, 1, 1, 0}, {1, 1, 0, 0}, {0, 0, 0, 0}},
+     {{1, 0, 0, 0}, {1, 1, 0, 0}, {0, 1, 0, 0}, {0, 0, 0, 0}}},
+    // 4: Z
+    {{{1, 1, 0, 0}, {0, 1, 1, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}},
+     {{0, 0, 1, 0}, {0, 1, 1, 0}, {0, 1, 0, 0}, {0, 0, 0, 0}},
+     {{0, 0, 0, 0}, {1, 1, 0, 0}, {0, 1, 1, 0}, {0, 0, 0, 0}},
+     {{0, 1, 0, 0}, {1, 1, 0, 0}, {1, 0, 0, 0}, {0, 0, 0, 0}}},
+    // 5: J
+    {{{1, 0, 0, 0}, {1, 1, 1, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}},
+     {{0, 1, 1, 0}, {0, 1, 0, 0}, {0, 1, 0, 0}, {0, 0, 0, 0}},
+     {{0, 0, 0, 0}, {1, 1, 1, 0}, {0, 0, 1, 0}, {0, 0, 0, 0}},
+     {{0, 1, 0, 0}, {0, 1, 0, 0}, {1, 1, 0, 0}, {0, 0, 0, 0}}},
+    // 6: L
+    {{{0, 0, 1, 0}, {1, 1, 1, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}},
+     {{0, 1, 0, 0}, {0, 1, 0, 0}, {0, 1, 1, 0}, {0, 0, 0, 0}},
+     {{0, 0, 0, 0}, {1, 1, 1, 0}, {1, 0, 0, 0}, {0, 0, 0, 0}},
+     {{1, 1, 0, 0}, {0, 1, 0, 0}, {0, 1, 0, 0}, {0, 0, 0, 0}}}};
+
+static void load_tetris_best_score() {
+    nvs_handle_t nvs_h;
+    if (nvs_open("storage", NVS_READONLY, &nvs_h) == ESP_OK) {
+        int32_t val = 0;
+        if (nvs_get_i32(nvs_h, "tetris_best", &val) == ESP_OK) {
+            tetris_best_score = val;
+        }
+        nvs_close(nvs_h);
+    }
+}
+
+static void save_tetris_best_score(int score) {
+    nvs_handle_t nvs_h;
+    if (nvs_open("storage", NVS_READWRITE, &nvs_h) == ESP_OK) {
+        nvs_set_i32(nvs_h, "tetris_best", score);
+        nvs_commit(nvs_h);
+        nvs_close(nvs_h);
+    }
+}
+
+static int tetris_pull_bag() {
+    if (tetris_bag_idx >= 7) {
+        for (int i = 0; i < 7; i++)
+            tetris_bag[i] = i;
+        for (int i = 6; i > 0; i--) {
+            int j = esp_random() % (i + 1);
+            int tmp = tetris_bag[i];
+            tetris_bag[i] = tetris_bag[j];
+            tetris_bag[j] = tmp;
+        }
+        tetris_bag_idx = 0;
+    }
+    return tetris_bag[tetris_bag_idx++];
+}
+
+static bool tetris_can_move(int px, int py, int rot) {
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) {
+            if (TETRIS_SHAPES[tetris_cur_type][rot][r][c]) {
+                int nx = px + c;
+                int ny = py + r;
+                if (nx < 0 || nx >= TETRIS_COLS || ny >= TETRIS_ROWS) {
+                    return false;
+                }
+                if (ny >= 0 && tetris_board[ny][nx] != 0) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+static bool tetris_spawn_piece() {
+    tetris_cur_type = tetris_next_type;
+    tetris_next_type = tetris_pull_bag();
+    tetris_cur_rot = 0;
+    tetris_cur_x = 3;
+    tetris_cur_y = 0;
+    tetris_lock_tick = 0;
+    return tetris_can_move(tetris_cur_x, tetris_cur_y, tetris_cur_rot);
+}
+
+static void tetris_init_game() {
+    memset(tetris_board, 0, sizeof(tetris_board));
+    for (int r = 0; r < TETRIS_ROWS; r++) {
+        for (int c = 0; c < TETRIS_COLS; c++) {
+            tetris_last_rendered[r][c] = 0xFFFFFFFF;
+        }
+    }
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) {
+            tetris_next_last_rendered[r][c] = 0xFFFFFFFF;
+        }
+    }
+    tetris_score = 0;
+    tetris_lines = 0;
+    tetris_level = 1;
+    tetris_drop_tick = 0;
+    tetris_lock_tick = 0;
+    tetris_das_dir = 0;
+    tetris_das_ticks = 0;
+    tetris_bag_idx = 7;
+
+    tetris_next_type = tetris_pull_bag();
+    tetris_spawn_piece();
+}
+
+static void tetris_rotate() {
+    if (tetris_game_state != TETRIS_STATE_PLAYING)
+        return;
+    int next_rot = (tetris_cur_rot + 1) % 4;
+    // 簡易踢牆 (Wall Kick)：原地、左1、右1、左2、右2
+    const int kicks[5] = {0, -1, 1, -2, 2};
+    for (int i = 0; i < 5; i++) {
+        if (tetris_can_move(tetris_cur_x + kicks[i], tetris_cur_y, next_rot)) {
+            tetris_cur_x += kicks[i];
+            tetris_cur_rot = next_rot;
+            tetris_lock_tick = 0;  // 旋轉成功給予小幅鎖定延遲
+            return;
+        }
+    }
+}
+
+static void tetris_lock_and_clear() {
+    // 1. 將方塊固定進棋盤
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) {
+            if (TETRIS_SHAPES[tetris_cur_type][tetris_cur_rot][r][c]) {
+                int ny = tetris_cur_y + r;
+                int nx = tetris_cur_x + c;
+                if (ny >= 0 && ny < TETRIS_ROWS && nx >= 0 && nx < TETRIS_COLS) {
+                    tetris_board[ny][nx] = tetris_cur_type + 1;
+                }
+            }
+        }
+    }
+
+    // 2. 掃描並消除滿行
+    int cleared = 0;
+    for (int r = TETRIS_ROWS - 1; r >= 0; r--) {
+        bool full = true;
+        for (int c = 0; c < TETRIS_COLS; c++) {
+            if (tetris_board[r][c] == 0) {
+                full = false;
+                break;
+            }
+        }
+        if (full) {
+            cleared++;
+            for (int k = r; k > 0; k--) {
+                memcpy(tetris_board[k], tetris_board[k - 1], TETRIS_COLS);
+            }
+            memset(tetris_board[0], 0, TETRIS_COLS);
+            r++;  // 重新檢查剛掉下來的這一列
+        }
+    }
+
+    if (cleared > 0) {
+        const int line_pts[5] = {0, 100, 300, 500, 800};
+        tetris_score += line_pts[cleared] * tetris_level;
+        tetris_lines += cleared;
+        tetris_level = 1 + (tetris_lines / 10);
+        if (tetris_score > tetris_best_score) {
+            tetris_best_score = tetris_score;
+            save_tetris_best_score(tetris_best_score);
+        }
+    }
+
+    // 3. 生成下一個方塊，若頂部堵死則 Game Over
+    if (!tetris_spawn_piece()) {
+        tetris_game_state = TETRIS_STATE_GAMEOVER;
+        if (tetris_overlay && tetris_overlay_label) {
+            lv_label_set_text_fmt(tetris_overlay_label, "GAME\nOVER\n\nSCORE:\n%d", tetris_score);
+            lv_obj_remove_flag(tetris_overlay, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+static void update_tetris_ui() {
+    if (!bg_tetris)
+        return;
+
+    if (tetris_score_label) {
+        lv_label_set_text_fmt(tetris_score_label, "S:%d  B:%d", tetris_score, tetris_best_score);
+    }
+    if (tetris_level_label) {
+        lv_label_set_text_fmt(tetris_level_label, "%d", tetris_level);
+    }
+    if (tetris_lines_label) {
+        lv_label_set_text_fmt(tetris_lines_label, "%d", tetris_lines);
+    }
+
+    // 計算 Ghost 幽靈落點位置
+    int ghost_y = tetris_cur_y;
+    if (tetris_game_state == TETRIS_STATE_PLAYING || tetris_game_state == TETRIS_STATE_PAUSE) {
+        while (tetris_can_move(tetris_cur_x, ghost_y + 1, tetris_cur_rot)) {
+            ghost_y++;
+        }
+    }
+
+    // 建立渲染緩衝矩陣 (0:空, 1~7:方塊色, 8:幽靈陰影)
+    uint8_t render_buf[TETRIS_ROWS][TETRIS_COLS];
+    memcpy(render_buf, tetris_board, sizeof(render_buf));
+
+    if (tetris_game_state == TETRIS_STATE_PLAYING || tetris_game_state == TETRIS_STATE_PAUSE) {
+        for (int r = 0; r < 4; r++) {
+            for (int c = 0; c < 4; c++) {
+                if (TETRIS_SHAPES[tetris_cur_type][tetris_cur_rot][r][c]) {
+                    int gx = tetris_cur_x + c;
+                    int gy = ghost_y + r;
+                    if (gy >= 0 && gy < TETRIS_ROWS && gx >= 0 && gx < TETRIS_COLS &&
+                        render_buf[gy][gx] == 0) {
+                        render_buf[gy][gx] = 8;
+                    }
+                    int ax = tetris_cur_x + c;
+                    int ay = tetris_cur_y + r;
+                    if (ay >= 0 && ay < TETRIS_ROWS && ax >= 0 && ax < TETRIS_COLS) {
+                        render_buf[ay][ax] = tetris_cur_type + 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // Dirty-check：只更新顏色改變的格子，極大降低 CPU 負擔
+    for (int r = 0; r < TETRIS_ROWS; r++) {
+        for (int c = 0; c < TETRIS_COLS; c++) {
+            uint8_t cell = render_buf[r][c];
+            uint32_t color = 0x141414;  // 空背景深灰
+            if (cell >= 1 && cell <= 7) {
+                color = TETRIS_COLORS[cell - 1];
+            } else if (cell == 8) {
+                color = 0x383838;  // 幽靈預覽陰影
+            }
+
+            if (tetris_cells[r][c] && tetris_last_rendered[r][c] != color) {
+                tetris_last_rendered[r][c] = color;
+                lv_obj_set_style_bg_color(tetris_cells[r][c], lv_color_hex(color), 0);
+            }
+        }
+    }
+
+    // 更新右側 Next 預覽小視窗
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) {
+            uint32_t color = 0x101010;
+            if (TETRIS_SHAPES[tetris_next_type][0][r][c]) {
+                color = TETRIS_COLORS[tetris_next_type];
+            }
+            if (tetris_next_cells[r][c] && tetris_next_last_rendered[r][c] != color) {
+                tetris_next_last_rendered[r][c] = color;
+                lv_obj_set_style_bg_color(tetris_next_cells[r][c], lv_color_hex(color), 0);
+            }
+        }
+    }
+}
+
+// ==========================================
 //        太空侵略者 (Space Invaders) 系統變數
 // ==========================================
 #define SPACE_MAX_BULLETS 4
@@ -1673,6 +2035,7 @@ static void load_bk_best_score() {
         nvs_close(nvs_h);
     }
 }
+
 static void save_bk_best_score(int score) {
     nvs_handle_t nvs_h;
     if (nvs_open("storage", NVS_READWRITE, &nvs_h) == ESP_OK) {
@@ -2693,6 +3056,24 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
             });
 
         }
+        // 2.5 俄羅斯方塊指令
+        else if (text.find("俄羅斯") != std::string::npos ||
+                 text.find("俄罗斯") != std::string::npos ||
+                 text.find("方塊") != std::string::npos || text.find("方块") != std::string::npos ||
+                 text.find("tetris") != std::string::npos ||
+                 text.find("Tetris") != std::string::npos) {
+            ESP_LOGI("VoiceCmd", "語音指令：立即跳轉至 俄羅斯方塊");
+            current_system_mode = 2;
+            current_ui_mode = 2;
+            game_menu_selection = GAME_TETRIS;
+            ui_mode_changed = true;
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
+        }
         // 3. 太空侵略者指令
         else if (text.find("太空") != std::string::npos || text.find("飛機") != std::string::npos ||
                  text.find("飞机") != std::string::npos) {
@@ -3105,6 +3486,72 @@ static void slot_stop_reel(int col) {
     lv_anim_start(&a);
 }
 
+static void apply_time_mode_layout() {
+    if (!bg_time_mode)
+        return;
+    int cur_w = lv_display_get_horizontal_resolution(lv_display_get_default());
+    int cur_h = lv_display_get_vertical_resolution(lv_display_get_default());
+
+    lv_obj_set_size(bg_time_mode, cur_w, cur_h);
+    lv_obj_align(bg_time_mode, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    if (!is_landscape) {
+        lv_obj_set_style_text_font(time_mode_hour_label, &micro5_120, 0);
+        lv_obj_align(time_mode_hour_label, LV_ALIGN_TOP_MID, 5, 30);
+
+        lv_obj_set_style_text_font(time_mode_min_label, &micro5_120, 0);
+        lv_obj_align(time_mode_min_label, LV_ALIGN_TOP_MID, 5, 100);
+
+        lv_obj_set_style_text_font(time_mode_date_label, &lv_font_montserrat_24, 0);
+        lv_obj_align(time_mode_date_label, LV_ALIGN_BOTTOM_LEFT, 10, -40);
+
+        lv_obj_set_style_text_font(time_mode_battery_label, &lv_font_montserrat_24, 0);
+        lv_obj_align(time_mode_battery_label, LV_ALIGN_BOTTOM_LEFT, 10, -15);
+    } else {
+        lv_obj_set_style_text_font(time_mode_hour_label, &micro5_105, 0);
+        lv_obj_align(time_mode_hour_label, LV_ALIGN_LEFT_MID, 20, -23);
+
+        lv_obj_set_style_text_font(time_mode_min_label, &micro5_105, 0);
+        // lv_obj_align(time_mode_min_label, LV_ALIGN_LEFT_MID, 110, -23);
+
+        lv_obj_set_style_text_font(time_mode_date_label, &lv_font_montserrat_24, 0);
+        lv_obj_align(time_mode_date_label, LV_ALIGN_BOTTOM_LEFT, 15, -33);
+
+        lv_obj_set_style_text_font(time_mode_battery_label, &lv_font_montserrat_24, 0);
+        lv_obj_align(time_mode_battery_label, LV_ALIGN_BOTTOM_LEFT, 15, -9);
+    }
+}
+
+static void apply_weather_mode_layout() {
+    if (!bg_weather_mode)
+        return;
+    int cur_w = lv_display_get_horizontal_resolution(lv_display_get_default());
+    int cur_h = lv_display_get_vertical_resolution(lv_display_get_default());
+
+    lv_obj_set_size(bg_weather_mode, cur_w, cur_h);
+    lv_obj_align(bg_weather_mode, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    if (!is_landscape) {
+        lv_obj_set_size(weather_icon_container, 120, 120);
+        lv_obj_align(weather_icon_container, LV_ALIGN_TOP_MID, 0, 20);
+
+        lv_obj_set_style_text_font(weather_current_label, &lv_font_montserrat_24, 0);
+        lv_obj_align(weather_current_label, LV_ALIGN_LEFT_MID, 10, 24);
+
+        lv_obj_align(weather_hilo_label, LV_ALIGN_BOTTOM_LEFT, 10, -10);
+        lv_obj_set_style_text_line_space(weather_hilo_label, -6, 0);
+    } else {
+        lv_obj_set_size(weather_icon_container, 100, 100);
+        lv_obj_align(weather_icon_container, LV_ALIGN_LEFT_MID, 5, -8);
+
+        lv_obj_set_style_text_font(weather_current_label, &lv_font_montserrat_24, 0);
+        lv_obj_align(weather_current_label, LV_ALIGN_BOTTOM_LEFT, 16, -16);
+
+        lv_obj_align(weather_hilo_label, LV_ALIGN_LEFT_MID, 110, -12);
+        lv_obj_set_style_text_line_space(weather_hilo_label, -6, 0);
+    }
+}
+
 // =======================================================
 // 🖥️ 小智原生 UI 深度適配引擎 (徹底修復左右雙色撕裂問題)
 // =======================================================
@@ -3170,8 +3617,9 @@ static void update_system_layout_for_orientation() {
             }
         }
 
-        // D. 底部字幕列 (bottom_bar_)
-        if (lv_obj_get_y(child) > (cur_h / 2)) {
+        // D. 底部字幕列 (bottom_bar_) — 排除隱藏中的 emoji_box_ / preview_image_
+        if (!lv_obj_has_flag(child, LV_OBJ_FLAG_HIDDEN) && child != bg_time_mode &&
+            child != bg_weather_mode && lv_obj_get_y(child) > (cur_h / 2)) {
             lv_obj_set_width(child, cur_w);
             lv_obj_align(child, LV_ALIGN_BOTTOM_MID, 0, 0);
 
@@ -3195,7 +3643,7 @@ static void update_system_layout_for_orientation() {
     }
 
     // 4. 強制 LVGL 立即刷新佈局並標記全螢幕重繪
-    lv_obj_update_layout(scr);
+    // lv_obj_update_layout(scr);
     lv_obj_invalidate(scr);
 }
 
@@ -3334,6 +3782,17 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             lv_obj_add_flag(game_menu_bg, LV_OBJ_FLAG_HIDDEN);
 
         if (current_ui_mode != 2) {
+            if (bg_tetris) {
+                lv_obj_del(bg_tetris);
+                bg_tetris = nullptr;
+                tetris_score_label = nullptr;
+                tetris_level_label = nullptr;
+                tetris_lines_label = nullptr;
+                tetris_overlay = nullptr;
+                tetris_overlay_label = nullptr;
+                memset(tetris_cells, 0, sizeof(tetris_cells));
+                memset(tetris_next_cells, 0, sizeof(tetris_next_cells));
+            }
             if (bg_space) {
                 lv_obj_del(bg_space);
                 bg_space = nullptr;
@@ -3389,6 +3848,17 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 ttt_toast_label = nullptr;
             }
         } else {
+            if (game_menu_selection != GAME_TETRIS && bg_tetris) {
+                lv_obj_del(bg_tetris);
+                bg_tetris = nullptr;
+                tetris_score_label = nullptr;
+                tetris_level_label = nullptr;
+                tetris_lines_label = nullptr;
+                tetris_overlay = nullptr;
+                tetris_overlay_label = nullptr;
+                memset(tetris_cells, 0, sizeof(tetris_cells));
+                memset(tetris_next_cells, 0, sizeof(tetris_next_cells));
+            }
             if (game_menu_selection != GAME_SPACE && bg_space) {
                 lv_obj_del(bg_space);
                 bg_space = nullptr;
@@ -3541,7 +4011,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             }
         }
         if (current_ui_mode != 3 && bg_time_mode) {
-            lv_obj_del(bg_time_mode);
+            lv_obj_add_flag(bg_time_mode, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_delete_async(bg_time_mode);
             bg_time_mode = nullptr;
             time_mode_hour_label = nullptr;
             time_mode_min_label = nullptr;
@@ -3549,14 +4020,14 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             time_mode_battery_label = nullptr;
         }
         if (current_ui_mode != 6 && bg_weather_mode) {
-            lv_obj_del(bg_weather_mode);
+            lv_obj_add_flag(bg_weather_mode, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_delete_async(bg_weather_mode);
             bg_weather_mode = nullptr;
             weather_icon_container = nullptr;
             weather_icon_label = nullptr;
             weather_current_label = nullptr;
             weather_hilo_label = nullptr;
         }
-
         // 防呆：如果退出老虎機，務必清除背景無限運作的滾動動畫，避免浪費 CPU！
         if (current_ui_mode != 2 || game_menu_selection != GAME_SLOT) {
             for (int i = 0; i < 3; i++) {
@@ -3598,8 +4069,9 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             } else {
                 lv_obj_set_style_bg_color(game_menu_bg, lv_color_hex(0x57007b), 0);
                 lv_label_set_text(menu_title_label, "GAME MODE");
-                const char* game_texts[] = {"Space\nInvaders", "Lucky 7", "Tic Tac\nToe",
-                                            "Breakout",        "2048",    "Snake"};
+                const char* game_texts[] = {"Tetris",       "Space\nInvaders", "Lucky 7",
+                                            "Tic Tac\nToe", "Breakout",        "2048",
+                                            "Snake"};
                 lv_label_set_text(game_menu_label, game_texts[game_menu_selection]);
             }
 
@@ -3912,7 +4384,120 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             }
 
         } else if (current_ui_mode == 2) {  // --- 進入遊戲 ---
-            if (game_menu_selection == GAME_SPACE) {
+            if (game_menu_selection == GAME_TETRIS) {
+                // ==================== 俄羅斯方塊 啟動邏輯 ====================
+                if (!bg_tetris) {
+                    load_tetris_best_score();
+
+                    bg_tetris = lv_obj_create(lv_scr_act());
+                    lv_obj_set_size(bg_tetris, LCD_W, LCD_H);
+                    lv_obj_set_style_bg_color(bg_tetris, lv_color_black(), 0);
+                    lv_obj_set_style_border_width(bg_tetris, 0, 0);
+                    lv_obj_set_style_radius(bg_tetris, 0, 0);
+                    lv_obj_set_style_pad_all(bg_tetris, 0, 0);
+                    lv_obj_clear_flag(bg_tetris, LV_OBJ_FLAG_SCROLLABLE);
+
+                    // 1. 頂部分數列
+                    tetris_score_label = lv_label_create(bg_tetris);
+                    lv_obj_set_style_text_color(tetris_score_label, lv_color_white(), 0);
+                    lv_obj_align(tetris_score_label, LV_ALIGN_TOP_LEFT, 6, 12);
+
+                    // 2. 遊戲區外框 (10x20 格，每格 10px，外框留白)
+                    lv_obj_t* board_frame = lv_obj_create(bg_tetris);
+                    lv_obj_set_size(board_frame, 103, 203);
+                    lv_obj_set_pos(board_frame, 4, 32);
+                    lv_obj_set_style_bg_opa(board_frame, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_border_color(board_frame, lv_color_hex(0x444444), 0);
+                    lv_obj_set_style_border_width(board_frame, 1, 0);
+                    lv_obj_set_style_radius(board_frame, 2, 0);
+                    lv_obj_clear_flag(board_frame, LV_OBJ_FLAG_SCROLLABLE);
+
+                    // 3. 10x20 方塊格網 (9x9 實體方塊 + 1px 間隙)
+                    for (int r = 0; r < TETRIS_ROWS; r++) {
+                        for (int c = 0; c < TETRIS_COLS; c++) {
+                            tetris_cells[r][c] = lv_obj_create(bg_tetris);
+                            lv_obj_set_size(tetris_cells[r][c], 9, 9);
+                            lv_obj_set_pos(tetris_cells[r][c], 6 + c * 10, 34 + r * 10);
+                            lv_obj_set_style_bg_color(tetris_cells[r][c], lv_color_hex(0x141414),
+                                                      0);
+                            lv_obj_set_style_bg_opa(tetris_cells[r][c], LV_OPA_COVER, 0);
+                            lv_obj_set_style_radius(tetris_cells[r][c], 1, 0);
+                            lv_obj_set_style_border_width(tetris_cells[r][c], 0, 0);
+                            lv_obj_clear_flag(tetris_cells[r][c], LV_OBJ_FLAG_SCROLLABLE);
+                        }
+                    }
+
+                    // 4. 右側欄：Next 預覽、等級、消行數
+                    lv_obj_t* nxt_lbl = lv_label_create(bg_tetris);
+                    lv_label_set_text(nxt_lbl, "NXT");
+                    lv_obj_set_style_text_color(nxt_lbl, lv_color_hex(0xAAAAAA), 0);
+                    lv_obj_set_width(nxt_lbl, 24);
+                    lv_obj_set_style_text_align(nxt_lbl, LV_TEXT_ALIGN_CENTER, 0);
+                    lv_obj_set_pos(nxt_lbl, 109, 32);
+
+                    for (int r = 0; r < 4; r++) {
+                        for (int c = 0; c < 4; c++) {
+                            tetris_next_cells[r][c] = lv_obj_create(bg_tetris);
+                            lv_obj_set_size(tetris_next_cells[r][c], 5, 5);
+                            lv_obj_set_pos(tetris_next_cells[r][c], 110 + c * 6, 50 + r * 6);
+                            lv_obj_set_style_bg_color(tetris_next_cells[r][c],
+                                                      lv_color_hex(0x101010), 0);
+                            lv_obj_set_style_bg_opa(tetris_next_cells[r][c], LV_OPA_COVER, 0);
+                            lv_obj_set_style_radius(tetris_next_cells[r][c], 1, 0);
+                            lv_obj_set_style_border_width(tetris_next_cells[r][c], 0, 0);
+                            lv_obj_clear_flag(tetris_next_cells[r][c], LV_OBJ_FLAG_SCROLLABLE);
+                        }
+                    }
+
+                    lv_obj_t* lv_lbl = lv_label_create(bg_tetris);
+                    lv_label_set_text(lv_lbl, "LV");
+                    lv_obj_set_style_text_color(lv_lbl, lv_color_hex(0xAAAAAA), 0);
+                    lv_obj_set_width(lv_lbl, 24);
+                    lv_obj_set_style_text_align(lv_lbl, LV_TEXT_ALIGN_CENTER, 0);
+                    lv_obj_set_pos(lv_lbl, 109, 86);
+
+                    tetris_level_label = lv_label_create(bg_tetris);
+                    lv_obj_set_style_text_color(tetris_level_label, lv_color_hex(0x00FF66), 0);
+                    lv_obj_set_width(tetris_level_label, 24);
+                    lv_obj_set_style_text_align(tetris_level_label, LV_TEXT_ALIGN_CENTER, 0);
+                    lv_obj_set_pos(tetris_level_label, 109, 102);
+
+                    lv_obj_t* ln_lbl = lv_label_create(bg_tetris);
+                    lv_label_set_text(ln_lbl, "LN");
+                    lv_obj_set_style_text_color(ln_lbl, lv_color_hex(0xAAAAAA), 0);
+                    lv_obj_set_width(ln_lbl, 24);
+                    lv_obj_set_style_text_align(ln_lbl, LV_TEXT_ALIGN_CENTER, 0);
+                    lv_obj_set_pos(ln_lbl, 109, 128);
+
+                    tetris_lines_label = lv_label_create(bg_tetris);
+                    lv_obj_set_style_text_color(tetris_lines_label, lv_color_hex(0x00FFFF), 0);
+                    lv_obj_set_width(tetris_lines_label, 24);
+                    lv_obj_set_style_text_align(tetris_lines_label, LV_TEXT_ALIGN_CENTER, 0);
+                    lv_obj_set_pos(tetris_lines_label, 109, 144);
+
+                    // 5. START / PAUSE / GAME OVER 遮罩
+                    tetris_overlay = lv_obj_create(bg_tetris);
+                    lv_obj_set_size(tetris_overlay, LCD_W, LCD_H);
+                    lv_obj_set_style_bg_color(tetris_overlay, lv_color_black(), 0);
+                    lv_obj_set_style_bg_opa(tetris_overlay, LV_OPA_80, 0);
+                    lv_obj_align(tetris_overlay, LV_ALIGN_CENTER, 0, 0);
+
+                    tetris_overlay_label = lv_label_create(tetris_overlay);
+                    lv_obj_set_style_text_color(tetris_overlay_label, lv_color_make(255, 200, 0),
+                                                0);
+                    lv_obj_set_style_text_font(tetris_overlay_label, &lv_font_montserrat_28, 0);
+                    lv_obj_set_style_text_align(tetris_overlay_label, LV_TEXT_ALIGN_CENTER, 0);
+                    lv_obj_align(tetris_overlay_label, LV_ALIGN_CENTER, 0, 0);
+                }
+
+                lv_obj_remove_flag(bg_tetris, LV_OBJ_FLAG_HIDDEN);
+                tetris_game_state = TETRIS_STATE_START;
+                tetris_init_game();
+                update_tetris_ui();
+                lv_label_set_text_fmt(tetris_overlay_label, "Best\nScore:\n%d", tetris_best_score);
+                lv_obj_remove_flag(tetris_overlay, LV_OBJ_FLAG_HIDDEN);
+
+            } else if (game_menu_selection == GAME_SPACE) {
                 // ==================== 太空侵略者 啟動邏輯 ====================
                 if (!bg_space) {
                     load_space_best_score();
@@ -4366,35 +4951,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 time_mode_date_label = lv_label_create(bg_time_mode);
                 time_mode_battery_label = lv_label_create(bg_time_mode);
 
-                if (!is_landscape) {
-                    // ================= 📱 直排 Layout (135x240) =================
-                    lv_obj_set_style_text_font(time_mode_hour_label, &micro5_120, 0);
-                    lv_obj_align(time_mode_hour_label, LV_ALIGN_TOP_MID, 0, 30);
-
-                    lv_obj_set_style_text_font(time_mode_min_label, &micro5_120, 0);
-                    lv_obj_align(time_mode_min_label, LV_ALIGN_TOP_MID, 0, 100);
-
-                    lv_obj_set_style_text_font(time_mode_date_label, &lv_font_montserrat_24, 0);
-                    lv_obj_align(time_mode_date_label, LV_ALIGN_BOTTOM_LEFT, 10, -40);
-
-                    lv_obj_set_style_text_font(time_mode_battery_label, &lv_font_montserrat_24, 0);
-                    lv_obj_align(time_mode_battery_label, LV_ALIGN_BOTTOM_LEFT, 10, -15);
-                } else {
-                    // ================= 📟 橫排 Layout (240x135) =================
-                    // 橫放時高度只有 135，micro5_120 剛好填滿中央，時分左右排列
-                    lv_obj_set_style_text_font(time_mode_hour_label, &micro5_120, 0);
-                    lv_obj_align(time_mode_hour_label, LV_ALIGN_LEFT_MID, 15, -20);
-
-                    lv_obj_set_style_text_font(time_mode_min_label, &micro5_120, 0);
-                    lv_obj_align(time_mode_min_label, LV_ALIGN_LEFT_MID, 112, -20);
-
-                    // 右側或頂部放日期與電量
-                    lv_obj_set_style_text_font(time_mode_date_label, &lv_font_montserrat_24, 0);
-                    lv_obj_align(time_mode_date_label, LV_ALIGN_BOTTOM_LEFT, 15, -32);
-
-                    lv_obj_set_style_text_font(time_mode_battery_label, &lv_font_montserrat_24, 0);
-                    lv_obj_align(time_mode_battery_label, LV_ALIGN_BOTTOM_LEFT, 15, -7);
-                }
+                apply_time_mode_layout();
             }
             lv_obj_remove_flag(bg_time_mode, LV_OBJ_FLAG_HIDDEN);
 
@@ -4431,28 +4988,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 weather_current_label = lv_label_create(bg_weather_mode);
                 weather_hilo_label = lv_label_create(bg_weather_mode);
 
-                if (!is_landscape) {
-                    // 📱 直排：圖標在上，資訊在下
-                    lv_obj_set_size(weather_icon_container, 120, 120);
-                    lv_obj_align(weather_icon_container, LV_ALIGN_TOP_MID, 0, 15);
-
-                    lv_obj_set_style_text_font(weather_current_label, &lv_font_montserrat_24, 0);
-                    lv_obj_align(weather_current_label, LV_ALIGN_LEFT_MID, 10, 18);
-
-                    lv_obj_align(weather_hilo_label, LV_ALIGN_BOTTOM_LEFT, 10, -10);
-                    lv_obj_set_style_text_line_space(weather_hilo_label, -6, 0);
-
-                } else {
-                    // 📟 橫排：圖標在左（約 100x100），溫度與細節在右
-                    lv_obj_set_size(weather_icon_container, 100, 100);
-                    lv_obj_align(weather_icon_container, LV_ALIGN_LEFT_MID, 5, -8);
-
-                    lv_obj_set_style_text_font(weather_current_label, &lv_font_montserrat_24, 0);
-                    lv_obj_align(weather_current_label, LV_ALIGN_BOTTOM_LEFT, 16, -16);
-
-                    lv_obj_align(weather_hilo_label, LV_ALIGN_LEFT_MID, 110, -12);
-                    lv_obj_set_style_text_line_space(weather_hilo_label, -6, 0);
-                }
+                apply_weather_mode_layout();
             }
             lv_obj_remove_flag(bg_weather_mode, LV_OBJ_FLAG_HIDDEN);
             memset(last_drawn_weather, 0, sizeof(last_drawn_weather));
@@ -4776,38 +5312,17 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
                         if (current_ui_mode == 0) {
                             if (face_container) {
-                                lv_obj_move_foreground(
-                                    face_container);  // 👈 確保臉部不會被小智的背景層壓住！
+                                lv_obj_move_foreground(face_container);
                             }
                             reset_avatar_geometry();
                             CustomApp_SetEmotion(current_active_emotion.c_str());
+                        } else if (current_ui_mode == 3 && bg_time_mode) {
+                            apply_time_mode_layout();
+                            update_clock_display();
+                        } else if (current_ui_mode == 6 && bg_weather_mode) {
+                            apply_weather_mode_layout();
+                            update_clock_display();
                         }
-
-                        if (current_ui_mode == 3 && bg_time_mode) {
-                            lv_obj_del(bg_time_mode);
-                            bg_time_mode = nullptr;
-                            time_mode_hour_label = nullptr;
-                            time_mode_min_label = nullptr;
-                            time_mode_date_label = nullptr;
-                            time_mode_battery_label = nullptr;
-                        }
-
-                        if (current_ui_mode == 6 && bg_weather_mode) {
-                            lv_obj_del(bg_weather_mode);
-                            bg_weather_mode = nullptr;
-                            weather_icon_container = nullptr;
-                            weather_icon_label = nullptr;
-                            weather_current_label = nullptr;
-                            weather_hilo_label = nullptr;
-                            memset(last_drawn_weather, 0, sizeof(last_drawn_weather));
-                        }
-
-                        if (current_ui_mode == 0) {
-                            reset_avatar_geometry();
-                            CustomApp_SetEmotion(current_active_emotion.c_str());
-                        }
-
-                        ui_mode_changed = true;
                     }
                 }
             }
@@ -4980,7 +5495,66 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             }
             // --- GAME 模式 ---
             else if (current_ui_mode == 2) {
-                if (game_menu_selection == GAME_SPACE && space_game_state == SPACE_STATE_PLAYING) {
+                if (game_menu_selection == GAME_TETRIS &&
+                    tetris_game_state == TETRIS_STATE_PLAYING) {
+                    // 1. 左右傾斜控制 (帶 DAS 延遲連發，避免一次飛到底)
+                    int desired_dir = 0;
+                    if (accel_x > TETRIS_TILT_X)
+                        desired_dir = 1;
+                    else if (accel_x < -TETRIS_TILT_X)
+                        desired_dir = -1;
+
+                    if (desired_dir != 0) {
+                        if (desired_dir != tetris_das_dir) {
+                            // 剛開始傾斜：立刻移動 1 格
+                            if (tetris_can_move(tetris_cur_x + desired_dir, tetris_cur_y,
+                                                tetris_cur_rot)) {
+                                tetris_cur_x += desired_dir;
+                            }
+                            tetris_das_dir = desired_dir;
+                            tetris_das_ticks = 0;
+                        } else {
+                            tetris_das_ticks++;
+                            // 持續傾斜超過 200ms (2 ticks) 後，每 200ms 連移一格
+                            if (tetris_das_ticks >= 2 && (tetris_das_ticks % 2 == 0)) {
+                                if (tetris_can_move(tetris_cur_x + desired_dir, tetris_cur_y,
+                                                    tetris_cur_rot)) {
+                                    tetris_cur_x += desired_dir;
+                                }
+                            }
+                        }
+                    } else {
+                        tetris_das_dir = 0;
+                        tetris_das_ticks = 0;
+                    }
+
+                    // 2. 重力自然下落與前傾軟降 (Soft Drop)
+                    bool soft_drop = (accel_y < -TETRIS_TILT_Y);
+                    int gravity_interval = 6 - (tetris_level - 1);
+                    if (gravity_interval < 2)
+                        gravity_interval = 2;
+                    if (soft_drop)
+                        gravity_interval = 1;  // 前傾時每 100ms 降一格
+
+                    tetris_drop_tick++;
+                    if (tetris_drop_tick >= gravity_interval) {
+                        tetris_drop_tick = 0;
+                        if (tetris_can_move(tetris_cur_x, tetris_cur_y + 1, tetris_cur_rot)) {
+                            tetris_cur_y++;
+                            tetris_lock_tick = 0;
+                            if (soft_drop)
+                                tetris_score += 1;  // 軟降獎勵分
+                        } else {
+                            // 碰底或碰到方塊：稍微給 1 tick 緩衝才鎖定 (加速下降則直接鎖定)
+                            tetris_lock_tick++;
+                            if (soft_drop || tetris_lock_tick >= 2) {
+                                tetris_lock_and_clear();
+                            }
+                        }
+                    }
+                    update_tetris_ui();
+                } else if (game_menu_selection == GAME_SPACE &&
+                           space_game_state == SPACE_STATE_PLAYING) {
                     const int16_t DEADZONE = 600;
                     int ship_speed = (abs(accel_y) > 5000) ? 12 : 6;
                     if (accel_x > DEADZONE)
@@ -5170,7 +5744,23 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             }
             // ==================== GAME 模式的短按動作 ====================
             else if (current_ui_mode == 2) {
-                if (game_menu_selection == GAME_SPACE) {
+                if (game_menu_selection == GAME_TETRIS) {
+                    if (tetris_game_state == TETRIS_STATE_START ||
+                        tetris_game_state == TETRIS_STATE_GAMEOVER) {
+                        tetris_game_state = TETRIS_STATE_PLAYING;
+                        if (tetris_overlay)
+                            lv_obj_add_flag(tetris_overlay, LV_OBJ_FLAG_HIDDEN);
+                        tetris_init_game();
+                        update_tetris_ui();
+                    } else if (tetris_game_state == TETRIS_STATE_PLAYING) {
+                        tetris_rotate();
+                        update_tetris_ui();
+                    } else if (tetris_game_state == TETRIS_STATE_PAUSE) {
+                        tetris_game_state = TETRIS_STATE_PLAYING;
+                        if (tetris_overlay)
+                            lv_obj_add_flag(tetris_overlay, LV_OBJ_FLAG_HIDDEN);
+                    }
+                } else if (game_menu_selection == GAME_SPACE) {
                     if (space_game_state == SPACE_STATE_START ||
                         space_game_state == SPACE_STATE_GAMEOVER) {
                         space_game_state = SPACE_STATE_PLAYING;
@@ -5459,6 +6049,13 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                         update_snake_ui();
                     }
                 }
+            }
+        } else if (pending_game_action == 7) {
+            if (current_ui_mode == 2 && game_menu_selection == GAME_TETRIS &&
+                tetris_game_state == TETRIS_STATE_PLAYING) {
+                tetris_rotate();
+                tetris_rotate();
+                update_tetris_ui();
             }
         }
         pending_game_action = 0;  // 執行完畢，重設訊號
@@ -6428,7 +7025,10 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
                                 }
 
                                 // 4. 臉部顏色
-                                apply_avatar_color(color_idx);
+                                if (auto disp = Board::GetInstance().GetDisplay()) {
+                                    DisplayLockGuard lock(disp);
+                                    apply_avatar_color(color_idx);
+                                }
                             });
                     }
                 }
@@ -6513,7 +7113,10 @@ static void mqtt_init_task(void* pvParameters) {
                                         Board::GetInstance().GetDisplay()->SetTheme(theme_obj);
                                     }
 
-                                    apply_avatar_color(color_idx);
+                                    if (auto disp = Board::GetInstance().GetDisplay()) {
+                                        DisplayLockGuard lock(disp);
+                                        apply_avatar_color(color_idx);
+                                    }
                                 });
                         }
                         cJSON_Delete(json);
@@ -7012,7 +7615,7 @@ void CustomApp_InitUI(lv_obj_t* parent) {
     lv_obj_set_style_pad_all(avatar_sleepy_z, 0, 0);
     lv_obj_clear_flag(avatar_sleepy_z, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(avatar_sleepy_z, LV_ALIGN_CENTER, EYE_POS_R + (EYE_BASE_W - 2),
-                 EYE_POS_H - (EYE_BASE_H - 10));
+                 EYE_POS_H - (EYE_BASE_H - 2));
 
     // 大 Z (靠右上一點)
     lv_obj_t* label_z_big = lv_label_create(avatar_sleepy_z);
@@ -7817,7 +8420,7 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
             // Apps 選單 -> 進入 Games 選單
             current_system_mode = 1;
             current_ui_mode = 1;
-            game_menu_selection = GAME_SPACE;
+            game_menu_selection = GAME_TETRIS;
         } else if (current_system_mode == 1) {
             // Games 選單 -> 進入暗黑時鐘 (3)
             current_system_mode = 3;
@@ -7826,6 +8429,11 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
             // 從時間(3) 雙擊 -> 進入天氣模式(6)
             current_system_mode = 6;
             current_ui_mode = 6;
+        } else if (current_system_mode == 2 && game_menu_selection == GAME_TETRIS &&
+                   tetris_game_state == TETRIS_STATE_PLAYING) {
+            // 俄羅斯方塊進行中：雙擊中鍵當作連續旋轉兩次 (180度)，避免誤觸退出
+            pending_game_action = 7;
+            return;
         } else if (current_system_mode == 6 || current_system_mode == 2 ||
                    current_system_mode == 5) {
             // 從天氣(6) 或其他遊戲App雙擊 -> 回血 100% 亮度，回到 AI (0)
@@ -7902,7 +8510,25 @@ void CustomApp_HijackSideButton(Button& side_button) {
             ui_mode_changed = true;
         } else if (current_system_mode == 2) {
             // 【修正】Game 執行中
-            if (game_menu_selection == GAME_2048) {
+            if (game_menu_selection == GAME_TETRIS) {
+                if (tetris_game_state == TETRIS_STATE_PLAYING) {
+                    tetris_game_state = TETRIS_STATE_PAUSE;
+                    if (tetris_overlay && tetris_overlay_label) {
+                        lv_label_set_text_fmt(tetris_overlay_label, "Paused\nScore:\n%d",
+                                              tetris_score);
+                        lv_obj_remove_flag(tetris_overlay, LV_OBJ_FLAG_HIDDEN);
+                    }
+                } else if (tetris_game_state == TETRIS_STATE_PAUSE) {
+                    tetris_game_state = TETRIS_STATE_PLAYING;
+                    if (tetris_overlay)
+                        lv_obj_add_flag(tetris_overlay, LV_OBJ_FLAG_HIDDEN);
+                } else {
+                    // Start 或 Game Over 畫面按側邊鍵：退回遊戲選單
+                    current_system_mode = 1;
+                    current_ui_mode = 1;
+                    ui_mode_changed = true;
+                }
+            } else if (game_menu_selection == GAME_2048) {
                 // 如果是 2048，側面鍵用來「暫停 / 繼續」防誤觸！
                 if (game_state_2048 == STATE_PLAYING) {
                     game_state_2048 = STATE_PAUSE;
