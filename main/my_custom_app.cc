@@ -6995,6 +6995,80 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
                                 }
                             });
                     }
+                    // 🎛️ 情況 3：Android App 遠端快速切換模式 (Chat / Sleep / Time / Weather)
+                    else if (strcmp(type->valuestring, "set_mode") == 0) {
+                        cJSON* mode_item = cJSON_GetObjectItem(json, "mode");
+                        if (mode_item && mode_item->valuestring) {
+                            std::string mode_str = mode_item->valuestring;
+                            ESP_LOGI("MQTT", "🎛️ 收到模式切換指令: %s", mode_str.c_str());
+
+                            Application::GetInstance().Schedule([mode_str]() {
+                                auto& app = Application::GetInstance();
+                                auto backlight = Board::GetInstance().GetBacklight();
+                                idle_to_clock_counter = 0;
+                                pending_touch_wake = 0;
+
+                                if (mode_str == "chat") {
+                                    // 進入 AI 對話模式並立即開始聆聽
+                                    current_system_mode = 0;
+                                    current_ui_mode = 0;
+                                    ui_mode_changed = true;
+                                    clock_is_bright = true;
+                                    clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
+                                    if (backlight)
+                                        backlight->SetBrightness(current_max_brightness);
+                                    if (app.GetDeviceState() == kDeviceStateIdle &&
+                                        ai_single_click_cb) {
+                                        ai_single_click_cb();
+                                    }
+                                } else if (mode_str == "sleep") {
+                                    // 掛斷對話並回到待機模式
+                                    app.AbortSpeaking(kAbortReasonNone);
+                                    app.StopListening();
+                                    app.SetDeviceState(kDeviceStateIdle);
+                                    current_system_mode = 0;
+                                    current_ui_mode = 0;
+                                    ui_mode_changed = true;
+                                    clock_is_bright = false;
+                                    clock_dim_countdown = 0;
+                                    if (backlight)
+                                        backlight->SetBrightness(BRIGHTNESS_DIM);
+                                } else if (mode_str == "time") {
+                                    // 切換至時間模式
+                                    app.AbortSpeaking(kAbortReasonNone);
+                                    app.StopListening();
+                                    app.SetDeviceState(kDeviceStateIdle);
+                                    current_system_mode = 3;
+                                    current_ui_mode = 3;
+                                    ui_mode_changed = true;
+                                    clock_is_bright = true;
+                                    clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
+                                    if (backlight)
+                                        backlight->SetBrightness(current_max_brightness);
+                                } else if (mode_str == "weather") {
+                                    // 切換至天氣模式並立即更新天氣
+                                    app.AbortSpeaking(kAbortReasonNone);
+                                    app.StopListening();
+                                    app.SetDeviceState(kDeviceStateIdle);
+                                    current_system_mode = 6;
+                                    current_ui_mode = 6;
+                                    ui_mode_changed = true;
+                                    clock_is_bright = true;
+                                    clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
+                                    if (backlight)
+                                        backlight->SetBrightness(current_max_brightness);
+
+                                    int64_t now_us = esp_timer_get_time();
+                                    if (weather_task_handle &&
+                                        (last_weather_fetch_us == 0 ||
+                                         now_us - last_weather_fetch_us > 10000000LL)) {
+                                        last_weather_fetch_us = now_us;
+                                        xTaskNotifyGive(weather_task_handle);
+                                    }
+                                }
+                            });
+                        }
+                    }
                 }
                 cJSON_Delete(json);
             }
