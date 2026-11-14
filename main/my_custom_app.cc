@@ -469,23 +469,26 @@ static void bus_fetch_task(void* pvParameters) {
 // G1 錫箔紙觸摸任務 (支援情緒互動與打斷說話)
 // ==========================================
 static void touch_wake_task(void* pvParameters) {
-    // 1. 初始化 Touch 模組 (G1 對應 TOUCH_PAD_NUM1)
     touch_pad_init();
     touch_pad_config(TOUCH_PAD_NUM1);
-    touch_pad_fsm_start();  // 啟動硬體背景測量
+    touch_pad_fsm_start();
 
     uint32_t baseline = 0;
     int touch_cooldown = 0;
-    int touch_duration = 0;    // 記錄連續觸摸的時間
-    bool is_touching = false;  // 是否正在觸摸中
+    int touch_duration = 0;
+    int g1_tap_wait_ticks = 0;  // 連摸兩下計時視窗 (500ms)
+    bool is_touching = false;
 
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(100));  // 每 100ms 讀取一次
+        vTaskDelay(pdMS_TO_TICKS(100));
+
+        if (g1_tap_wait_ticks > 0) {
+            g1_tap_wait_ticks--;
+        }
 
         uint32_t touch_val = 0;
         touch_pad_read_raw_data(TOUCH_PAD_NUM1, &touch_val);
 
-        // 2. 智慧基準值 (Baseline) 自動校準
         if (baseline == 0 && touch_val > 0) {
             baseline = touch_val;
         } else if (touch_val > 0 && touch_val < baseline + 2000 && !is_touching) {
@@ -497,7 +500,6 @@ static void touch_wake_task(void* pvParameters) {
             continue;
         }
 
-        // 3. 判斷當下是否正在被觸摸
         bool current_touch = (baseline > 0 && touch_val > baseline + 6000);
 
         if (current_touch) {
@@ -505,8 +507,19 @@ static void touch_wake_task(void* pvParameters) {
                 is_touching = true;
                 touch_duration = 1;
 
-                // 情況 A：如果是在時鐘或天氣模式，瞬間切回 AI 臉蛋並喚醒麥克風
-                if (current_system_mode == 3 || current_system_mode == 6) {
+                // 情況 0：如果在電視遙控模式 (Mode 7) -> 摸一下立刻退出回 AI 待機！
+                if (current_system_mode == 7) {
+                    ESP_LOGI("Touch", "📺 觸摸 G1，退出電視遙控模式");
+                    current_system_mode = 0;
+                    current_ui_mode = 0;
+                    ui_mode_changed = true;
+                    pending_emotion_cmd = "neutral";
+                    g1_tap_wait_ticks = 0;
+                    is_touching = false;
+                    touch_cooldown = 10;
+                }
+                // 情況 A：如果在時鐘或天氣模式 -> 切回 AI 臉蛋並喚醒麥克風
+                else if (current_system_mode == 3 || current_system_mode == 6) {
                     auto backlight = Board::GetInstance().GetBacklight();
                     if (backlight)
                         backlight->SetBrightness(current_max_brightness);
@@ -514,51 +527,71 @@ static void touch_wake_task(void* pvParameters) {
                     current_ui_mode = 0;
                     ui_mode_changed = true;
                     idle_to_clock_counter = 0;
-                    pending_touch_wake = 15;  // 觸發喚醒語音
-
-                    is_touching = false;  // 處理完畢，提早重置狀態
-                    touch_cooldown = 30;  // 3秒冷卻
+                    pending_touch_wake = 15;
+                    g1_tap_wait_ticks = 0;
+                    is_touching = false;
+                    touch_cooldown = 30;
                 }
-                // 情況 B：如果在 AI 模式下正在說話 -> 立刻打斷！
+                // 情況 B：在 AI 模式下
                 else if (current_system_mode == 0) {
                     DeviceState state = Application::GetInstance().GetDeviceState();
                     if (state == kDeviceStateSpeaking) {
                         Application::GetInstance().Schedule(
                             []() { Application::GetInstance().AbortSpeaking(kAbortReasonNone); });
                         ESP_LOGI("Touch", "🛑 觸控打斷 AI 說話！");
+                        g1_tap_wait_ticks = 0;
                         is_touching = false;
                         touch_cooldown = 15;
+                    } else if (state == kDeviceStateIdle && g1_tap_wait_ticks > 0) {
+                        // ✨ 500ms 內偵測到第 2 下觸摸 -> 秒進電視遙控模式 (Mode 7)！
+                        ESP_LOGI("Touch", "📺 連摸兩下 G1！進入電視遙控模式");
+                        g1_tap_wait_ticks = 0;
+                        petting_emotion_timer = 0;
+                        pending_touch_wake = 0;
+                        idle_to_clock_counter = 0;
+
+                        current_system_mode = 7;
+                        current_ui_mode = 7;
+                        ui_mode_changed = true;
+                        pending_emotion_cmd = "cool";
+
+                        auto backlight = Board::GetInstance().GetBacklight();
+                        if (backlight)
+                            backlight->SetBrightness(current_max_brightness);
+
+                        is_touching = false;
+                        touch_cooldown = 10;
                     }
                 }
             } else {
-                // 持續觸摸中...
                 touch_duration++;
 
-                // 情況 C：AI 待機模式下，長按超過 1.5 秒 (15 ticks) -> 觸發長按生氣/無奈表情
+                // 情況 C：AI 待機長按超過 1.5 秒 -> 發脾氣表情
                 if (current_system_mode == 0 && touch_duration == 15) {
                     DeviceState state = Application::GetInstance().GetDeviceState();
                     if (state == kDeviceStateIdle) {
                         ESP_LOGI("Touch", "😠 摸太久了，發脾氣！");
+                        g1_tap_wait_ticks = 0;
                         pending_emotion_cmd = (esp_random() % 2 == 0) ? "sleepy" : "confused";
-                        petting_emotion_timer = 20;  // 表情維持 2 秒
+                        petting_emotion_timer = 20;
                     }
                 }
             }
         } else {
-            // 放開觸摸
             if (is_touching) {
-                // 情況 D：AI 待機模式下，短按放開 (< 1.5 秒) -> 觸發開心/愛心表情
+                // 情況 D：AI 待機短按放開 -> 開心表情 + 開啟 500ms 雙擊等待視窗
                 if (current_system_mode == 0 && touch_duration < 15) {
                     DeviceState state = Application::GetInstance().GetDeviceState();
                     if (state == kDeviceStateIdle) {
                         ESP_LOGI("Touch", "🥰 摸摸頭，很開心！");
                         pending_emotion_cmd = (esp_random() % 2 == 0) ? "happy" : "loving";
-                        petting_emotion_timer = 20;  // 表情維持 2 秒
+                        petting_emotion_timer = 20;
+                        g1_tap_wait_ticks = 5;  // 500ms 內再摸一下就會進入電視遙控
                     }
                 }
                 is_touching = false;
                 touch_duration = 0;
-                touch_cooldown = 5;  // 短暫冷卻防連觸
+                touch_cooldown = 2;  // 200ms 短防抖，確保能流暢連摸兩下
             }
         }
     }
@@ -953,12 +986,13 @@ static void update_clock_display() {
 // 系統清單對照表 (未來修改順序，只要改這裡就好！)
 // ==========================================
 enum AppIndex {
-    APP_BWA = 0,    // 擲杯
-    APP_MARK6,      // 六合彩
-    APP_LEVEL,      // 新增的水平儀
-    APP_STOPWATCH,  // 碼表
-    APP_TIMER,      // 新增的倒數計時器
-    APP_MAX         // 自動計算總數
+    APP_TV_REMOTE = 0,  // 電視遙控
+    APP_BWA,            // 擲杯
+    APP_MARK6,          // 六合彩
+    APP_LEVEL,          // 新增的水平儀
+    APP_STOPWATCH,      // 碼表
+    APP_TIMER,          // 新增的倒數計時器
+    APP_MAX             // 自動計算總數
 };
 
 enum GameIndex {
@@ -971,8 +1005,14 @@ enum GameIndex {
     GAME_MAX         // 自動計算總數
 };
 
-static int app_menu_selection = APP_BWA;
+static int app_menu_selection = APP_TV_REMOTE;
 static int game_menu_selection = GAME_SPACE;
+
+// 電視遙控 (TV Remote) 介面變數
+static lv_obj_t* bg_tv_remote = nullptr;
+static lv_obj_t* tv_status_label = nullptr;
+static lv_obj_t* tv_hint_label = nullptr;
+static int tv_feedback_ticks = 0;
 
 // ==========================================
 // 水平儀 (Spirit Level) 系統變數
@@ -2384,6 +2424,25 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
                 app.SetDeviceState(kDeviceStateIdle);
             });
         }
+        // 電視遙控指令
+        else if (text.find("電視遙控") != std::string::npos ||
+                 text.find("电视遥控") != std::string::npos ||
+                 text.find("電視音量") != std::string::npos ||
+                 text.find("电视音量") != std::string::npos ||
+                 text.find("TV Remote") != std::string::npos) {
+            ESP_LOGI("VoiceCmd", "語音指令：啟動電視遙控");
+            current_system_mode = 5;
+            current_ui_mode = 5;
+            app_menu_selection = APP_TV_REMOTE;
+            ui_mode_changed = true;
+
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
+        }
         // 2. 六合彩指令
         else if (text.find("六合彩") != std::string::npos ||
                  text.find("六合") != std::string::npos) {
@@ -2798,7 +2857,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         petting_emotion_timer = petting_emotion_timer - 1;
         if (petting_emotion_timer == 0) {
             // 互動時間結束，如果還在待機狀態，就恢復平靜
-            if (Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
+            if (current_ui_mode == 0 &&
+                Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
                 CustomApp_SetEmotion("neutral");
                 // 重新啟動待機排程器 (承接你剛才裝上的四處看與打呼功能)
                 idle_anim_state = 0;
@@ -3058,6 +3118,12 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         }
 
         if (current_ui_mode != 5) {
+            if (bg_tv_remote) {
+                lv_obj_del(bg_tv_remote);
+                bg_tv_remote = nullptr;
+                tv_status_label = nullptr;
+                tv_hint_label = nullptr;
+            }
             if (bg_bwa) {
                 lv_obj_del(bg_bwa);
                 bg_bwa = nullptr;
@@ -3190,8 +3256,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             if (current_ui_mode == 4) {
                 lv_obj_set_style_bg_color(game_menu_bg, lv_color_hex(0x000ec7), 0);
                 lv_label_set_text(menu_title_label, "APP MODE");
-                const char* app_texts[] = {"Moon\nBlock", "Mark 6", "Spirit\nLevel", "Stop\nWatch",
-                                           "Timer"};
+                const char* app_texts[] = {"TV\nRemote",    "Moon\nBlock", "Mark 6",
+                                           "Spirit\nLevel", "Stop\nWatch", "Timer"};
                 lv_label_set_text(game_menu_label, app_texts[app_menu_selection]);
             } else {
                 lv_obj_set_style_bg_color(game_menu_bg, lv_color_hex(0x57007b), 0);
@@ -3208,7 +3274,36 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
             return;
         } else if (current_ui_mode == 5) {  // --- 進入 APP 模式 ---
-            if (app_menu_selection == APP_BWA) {
+            if (app_menu_selection == APP_TV_REMOTE) {
+                if (!bg_tv_remote) {
+                    bg_tv_remote = lv_obj_create(lv_scr_act());
+                    lv_obj_set_size(bg_tv_remote, LCD_W, LCD_H);
+                    lv_obj_set_style_bg_color(bg_tv_remote, lv_color_black(), 0);
+                    lv_obj_set_style_border_width(bg_tv_remote, 0, 0);
+                    lv_obj_set_style_radius(bg_tv_remote, 0, 0);
+                    lv_obj_set_style_pad_all(bg_tv_remote, 0, 0);
+
+                    lv_obj_t* title = lv_label_create(bg_tv_remote);
+                    lv_label_set_text(title, "TV REMOTE");
+                    lv_obj_set_style_text_color(title, lv_color_make(0, 255, 255), 0);
+                    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
+
+                    tv_status_label = lv_label_create(bg_tv_remote);
+                    lv_label_set_text(tv_status_label, "READY");
+                    lv_obj_set_style_text_font(tv_status_label, &lv_font_montserrat_28, 0);
+                    lv_obj_set_style_text_color(tv_status_label, lv_color_white(), 0);
+                    lv_obj_align(tv_status_label, LV_ALIGN_CENTER, 0, -6);
+
+                    tv_hint_label = lv_label_create(bg_tv_remote);
+                    lv_label_set_text(tv_hint_label, "Press: Power\nTilt: Vol +/-");
+                    lv_obj_set_style_text_align(tv_hint_label, LV_TEXT_ALIGN_CENTER, 0);
+                    lv_obj_set_style_text_color(tv_hint_label, lv_color_hex(0xAAAAAA), 0);
+                    lv_obj_align(tv_hint_label, LV_ALIGN_BOTTOM_MID, 0, -8);
+                }
+                lv_obj_remove_flag(bg_tv_remote, LV_OBJ_FLAG_HIDDEN);
+                tv_feedback_ticks = 0;
+                return;
+            } else if (app_menu_selection == APP_BWA) {
                 // ==================== 擲杯 啟動邏輯 ====================
                 if (!bg_bwa) {
                     bg_bwa = lv_obj_create(lv_scr_act());
@@ -3958,7 +4053,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 backlight->SetBrightness(
                     current_max_brightness);  // 👈 原本是 BRIGHTNESS_DIM，改為 100
             return;
-        } else if (current_ui_mode == 0) {  // --- 退出遊戲，回到 AI ---
+        } else if (current_ui_mode == 0 || current_ui_mode == 7) {  // --- 退出遊戲，回到 AI ---
             // 恢復臉部顯示
             lv_obj_remove_flag(avatar_left_eye, LV_OBJ_FLAG_HIDDEN);
             lv_obj_remove_flag(avatar_right_eye, LV_OBJ_FLAG_HIDDEN);
@@ -4115,18 +4210,18 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     // 通用螢幕背光 5 秒自動變暗倒數 (適用於 AI待機、時間、天氣)
     // ==============================================
     if (current_ui_mode == 3 || current_ui_mode == 6 ||
-        (current_ui_mode == 0 && Application::GetInstance().GetDeviceState() == kDeviceStateIdle)) {
-        if (clock_is_bright && clock_dim_countdown > 0) {
-            clock_dim_countdown--;
-            if (clock_dim_countdown == 0) {
-                auto backlight = Board::GetInstance().GetBacklight();
-                if (backlight)
-                    backlight->SetBrightness(BRIGHTNESS_DIM);
-                clock_is_bright = false;
-                ESP_LOGI("System", "10秒無操作，螢幕自動變暗");
+        current_ui_mode == 0 && Application::GetInstance().GetDeviceState() == kDeviceStateIdle)) {
+            if (clock_is_bright && clock_dim_countdown > 0) {
+                clock_dim_countdown--;
+                if (clock_dim_countdown == 0) {
+                    auto backlight = Board::GetInstance().GetBacklight();
+                    if (backlight)
+                        backlight->SetBrightness(BRIGHTNESS_DIM);
+                    clock_is_bright = false;
+                    ESP_LOGI("System", "10秒無操作，螢幕自動變暗");
+                }
             }
         }
-    }
 
     // --- 時鐘模式：每 1 秒更新一次時間文字。支援點亮、手動/自動 3 秒變暗 ---
     if (current_ui_mode == 3 || current_ui_mode == 6) {
@@ -4177,7 +4272,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     // 【體感控制核心】BMI270 讀取與雙遊戲方向分流
     // ==============================================
     if ((current_ui_mode == 0 || current_ui_mode == 2 || current_ui_mode == 3 ||
-         current_ui_mode == 5 || current_ui_mode == 6) &&
+         current_ui_mode == 5 || current_ui_mode == 6 || current_ui_mode == 7) &&
         imu_initialized) {
         static bool tilt_locked_2048 = false;
         uint8_t reg = BMI270_REG_DATA_X_LSB;
@@ -4468,8 +4563,67 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         }
     }
 
+    // ==============================================
+    // 🎛️ 電視遙控體感音量引擎 (Mode 7 快捷模式 & Mode 5 App模式共用)
+    // ==============================================
+    if (((current_ui_mode == 7) || (current_ui_mode == 5 && app_menu_selection == APP_TV_REMOTE)) &&
+        imu_initialized) {
+        clock_is_bright = true;
+        clock_dim_countdown = 100;
+        idle_to_clock_counter = 0;
+
+        static int tv_vol_cooldown = 0;
+        if (tv_vol_cooldown > 0)
+            tv_vol_cooldown--;
+        if (tv_feedback_ticks > 0) {
+            tv_feedback_ticks--;
+            if (tv_feedback_ticks == 0 && current_ui_mode == 5 && tv_status_label) {
+                lv_label_set_text(tv_status_label, "READY");
+                lv_obj_set_style_text_color(tv_status_label, lv_color_white(), 0);
+            }
+        }
+
+        const int16_t TILT_THRESHOLD = 1500;
+        if (tv_vol_cooldown == 0) {
+            if (global_accel_x > TILT_THRESHOLD) {
+                if (global_mqtt_client) {
+                    esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/volume", "UP", 2, 0, 0);
+                }
+                if (current_ui_mode == 7) {
+                    if (current_active_emotion != "happy")
+                        pending_emotion_cmd = "happy";
+                } else if (tv_status_label) {
+                    lv_label_set_text(tv_status_label, "VOL +");
+                    lv_obj_set_style_text_color(tv_status_label, lv_color_hex(0x00FF66), 0);
+                    tv_feedback_ticks = 6;
+                }
+                tv_vol_cooldown = 5;
+            } else if (global_accel_x < -TILT_THRESHOLD) {
+                if (global_mqtt_client) {
+                    esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/volume", "DOWN", 4, 0,
+                                            0);
+                }
+                if (current_ui_mode == 7) {
+                    if (current_active_emotion != "surprised")
+                        pending_emotion_cmd = "surprised";
+                } else if (tv_status_label) {
+                    lv_label_set_text(tv_status_label, "VOL -");
+                    lv_obj_set_style_text_color(tv_status_label, lv_color_make(0, 255, 255), 0);
+                    tv_feedback_ticks = 6;
+                }
+                tv_vol_cooldown = 5;
+            }
+        }
+
+        if (current_ui_mode == 7 && abs(global_accel_x) < 800) {
+            if (current_active_emotion != "cool")
+                pending_emotion_cmd = "cool";
+        }
+    }
+
     // 安全地在 LVGL 執行緒裡處理遊戲動作 (方向 1~4，按鍵動作 5)
-    if ((current_ui_mode == 2 || current_ui_mode == 5) && pending_game_action != 0) {
+    if ((current_ui_mode == 2 || current_ui_mode == 5 || current_ui_mode == 7) &&
+        pending_game_action != 0) {
         idle_to_clock_counter = 0;  // 👈 只要有操作，重置閒置計時器
         if (pending_game_action == 1)
             move_2048_left();
@@ -4480,8 +4634,21 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         else if (pending_game_action == 4)
             move_2048_down();
         else if (pending_game_action == 5) {
-            // ==================== APP 模式的短按動作 ====================
-            if (current_ui_mode == 5) {
+            if (current_ui_mode == 7 ||
+                (current_ui_mode == 5 && app_menu_selection == APP_TV_REMOTE)) {
+                ESP_LOGI("TV_PWR", "🔘 按鍵觸發開/關電視！");
+                if (global_mqtt_client) {
+                    esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/power", "TOGGLE", 6, 0,
+                                            0);
+                }
+                if (current_ui_mode == 5 && tv_status_label) {
+                    lv_label_set_text(tv_status_label, "POWER!");
+                    lv_obj_set_style_text_color(tv_status_label, lv_color_make(255, 180, 0), 0);
+                    tv_feedback_ticks = 8;
+                } else if (current_ui_mode == 7) {
+                    pending_emotion_cmd = "winking";
+                }
+            } else if (current_ui_mode == 5) {
                 if (app_menu_selection == APP_BWA) {
                     if (bwa_roll_anim_ticks == 0)
                         bwa_roll_anim_ticks = 8;
@@ -5330,7 +5497,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         }
     }
 
-    if (current_ui_mode != 0)
+    if (current_ui_mode != 0 && current_ui_mode != 7)
         return;  // 如果在遊戲模式，不更新臉部表情
 
     // =======================================================
@@ -7217,7 +7384,8 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
             // Game 選單輪捲
             game_menu_selection = (game_menu_selection + 1) % GAME_MAX;
             ui_mode_changed = true;
-        } else if (current_system_mode == 2 || current_system_mode == 5) {
+        } else if (current_system_mode == 2 || current_system_mode == 5 ||
+                   current_system_mode == 7) {
             // 【修正】確保在過三關中按鈕可以喚醒麥克風
             if (current_system_mode == 2 && game_menu_selection == GAME_TICTACTOE) {
                 if (ttt_game_state == TTT_STATE_START || ttt_game_state == TTT_STATE_GAMEOVER) {
@@ -7274,6 +7442,11 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
             if (ai_long_press_cb) {
                 ai_long_press_cb();
             }
+        } else if (current_system_mode == 7) {
+            current_system_mode = 0;
+            current_ui_mode = 0;
+            pending_emotion_cmd = "neutral";
+            ui_mode_changed = true;
         }
     });
 
@@ -7285,7 +7458,7 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
             // AI 模式 -> 進入 Apps 選單
             current_system_mode = 4;
             current_ui_mode = 4;
-            app_menu_selection = APP_BWA;
+            app_menu_selection = APP_TV_REMOTE;
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight)
                 backlight->SetBrightness(current_max_brightness);
@@ -7303,7 +7476,7 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
             current_system_mode = 6;
             current_ui_mode = 6;
         } else if (current_system_mode == 6 || current_system_mode == 2 ||
-                   current_system_mode == 5) {
+                   current_system_mode == 5 || current_system_mode == 7) {
             // 【新增修改】：從天氣(6) 或其他遊戲App雙擊 -> 回血 100% 亮度，回到 AI (0)
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight)
