@@ -105,9 +105,9 @@ static esp_mqtt_client_handle_t global_mqtt_client = nullptr;
 static char mqtt_status_topic[64];
 
 // 控制時鐘亮暗與 5 秒自動倒數
-static bool clock_is_bright = false;  // 目前是否為高亮狀態
-static int clock_dim_countdown = 0;   // 倒數計時器 (每 100ms 扣 1)
-const int CLOCK_DIM_TIMEOUT_SEC = 5;  // 亮起後等待幾秒自動變暗 (可自行改成 3 或 5 秒)
+static bool clock_is_bright = false;   // 目前是否為高亮狀態
+static int clock_dim_countdown = 0;    // 倒數計時器 (每 100ms 扣 1)
+const int CLOCK_DIM_TIMEOUT_SEC = 10;  // 亮起後等待幾秒自動變暗 (可自行改成 3 或 5 秒)
 #define BRIGHTNESS_DIM 2
 int current_max_brightness = 100;
 
@@ -305,6 +305,16 @@ volatile int current_ui_mode = 0;
 volatile bool ui_mode_changed = false;
 volatile int pending_game_action = 0;
 volatile int pending_touch_wake = 0;  // 觸摸後的表情展示倒數
+
+// 通知前的狀態記憶與還原控制
+static volatile bool notify_restore_pending = false;
+static bool notify_has_spoken = false;
+static int notify_timeout_ticks = 0;
+static int notify_resume_chat_ticks = 0;
+static int notify_prev_system_mode = 0;
+static int notify_prev_ui_mode = 0;
+static bool notify_prev_clock_bright = false;
+static bool notify_prev_was_active_chat = false;
 
 // 儲存原本 AI 模式下的按鍵動作
 static std::function<void()> ai_single_click_cb = nullptr;
@@ -3680,6 +3690,74 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         pending_emotion_cmd = nullptr;
     }
 
+    // ==============================================
+    // 🔔 重要通知播報完畢後的狀態自動還原引擎
+    // ==============================================
+    if (notify_restore_pending) {
+        DeviceState cur_dev_state = Application::GetInstance().GetDeviceState();
+
+        if (cur_dev_state == kDeviceStateSpeaking) {
+            notify_has_spoken = true;
+            notify_timeout_ticks = 0;
+        } else if (notify_has_spoken) {
+            // 只要一離開 Speaking（播報完畢），立刻解除鎖定並還原
+            notify_restore_pending = false;
+            notify_has_spoken = false;
+
+            if (notify_prev_was_active_chat) {
+                // 情況 C：通知前原本就在 AI 對話模式 -> 若已斷開則延遲 300ms 自動恢復對話聆聽
+                if (cur_dev_state == kDeviceStateIdle) {
+                    notify_resume_chat_ticks = 3;
+                }
+            } else {
+                // 情況 A/B：原本在待機、時間、天氣或遊戲 -> 確保停止聆聽，還原原本模式
+                if (cur_dev_state != kDeviceStateIdle) {
+                    Application::GetInstance().Schedule([]() {
+                        auto& app = Application::GetInstance();
+                        app.AbortSpeaking(kAbortReasonNone);
+                        app.StopListening();
+                        app.SetDeviceState(kDeviceStateIdle);
+                    });
+                }
+
+                current_system_mode = notify_prev_system_mode;
+                current_ui_mode = notify_prev_ui_mode;
+                ui_mode_changed = true;
+
+                if (notify_prev_ui_mode == 0 && !notify_prev_clock_bright) {
+                    clock_is_bright = false;
+                    clock_dim_countdown = 0;
+                    auto backlight = Board::GetInstance().GetBacklight();
+                    if (backlight)
+                        backlight->SetBrightness(BRIGHTNESS_DIM);
+                } else if (notify_prev_ui_mode == 3 || notify_prev_ui_mode == 6) {
+                    clock_is_bright = notify_prev_clock_bright;
+                    clock_dim_countdown =
+                        notify_prev_clock_bright ? (CLOCK_DIM_TIMEOUT_SEC * 10) : 0;
+                }
+            }
+        } else if (notify_timeout_ticks > 0) {
+            // 超時保護：萬一 10 秒內沒成功說話，也自動還原原本畫面
+            notify_timeout_ticks--;
+            if (notify_timeout_ticks == 0) {
+                notify_restore_pending = false;
+                current_system_mode = notify_prev_system_mode;
+                current_ui_mode = notify_prev_ui_mode;
+                ui_mode_changed = true;
+            }
+        }
+    }
+
+    if (notify_resume_chat_ticks > 0) {
+        notify_resume_chat_ticks--;
+        if (notify_resume_chat_ticks == 0) {
+            if (Application::GetInstance().GetDeviceState() == kDeviceStateIdle &&
+                ai_single_click_cb) {
+                ai_single_click_cb();
+            }
+        }
+    }
+
     if (!avatar_left_eye || !avatar_right_eye || !avatar_mouth)
         return;
 
@@ -4920,7 +4998,6 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             lv_obj_remove_flag(bg_time_mode, LV_OBJ_FLAG_HIDDEN);
 
             update_clock_display();  // 刷新資訊
-            // clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;  // 👈 原本是 0，改為開始倒數
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight) {
                 if (clock_is_bright) {
@@ -4957,7 +5034,6 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             lv_obj_remove_flag(bg_weather_mode, LV_OBJ_FLAG_HIDDEN);
             memset(last_drawn_weather, 0, sizeof(last_drawn_weather));
             update_clock_display();
-            // clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;  // 👈 原本是 0，改為開始倒數
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight) {
                 if (clock_is_bright) {
@@ -4973,7 +5049,6 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             lv_obj_remove_flag(avatar_right_eye, LV_OBJ_FLAG_HIDDEN);
             lv_obj_remove_flag(avatar_mouth, LV_OBJ_FLAG_HIDDEN);
             last_avatar_state = (DeviceState)-1;  // 強制刷新臉部
-            // clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
             auto backlight = Board::GetInstance().GetBacklight();
             if (backlight) {
                 if (clock_is_bright) {
@@ -5139,7 +5214,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 if (backlight)
                     backlight->SetBrightness(BRIGHTNESS_DIM);
                 clock_is_bright = false;
-                ESP_LOGI("System", "5秒無操作，螢幕自動變暗");
+                ESP_LOGI("System", "10秒無操作，螢幕自動變暗");
             }
         }
     }
@@ -6933,6 +7008,44 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
                             }
                         });
                     }
+                    // 🔔 情況 1.5：WhatsApp / 來電重要通知 (記住原本狀態，講完自動還原)
+                    else if (strcmp(type->valuestring, "notify") == 0) {
+                        ESP_LOGI("MQTT", "🔔 收到重要通知，準備播報並記憶原狀態...");
+                        Application::GetInstance().Schedule([]() {
+                            auto& app = Application::GetInstance();
+                            auto backlight = Board::GetInstance().GetBacklight();
+                            idle_to_clock_counter = 0;
+                            pending_touch_wake = 0;
+
+                            // 避免短時間連續來兩則通知時，把一開始記住的原始模式覆蓋掉
+                            if (!notify_restore_pending) {
+                                notify_prev_system_mode = current_system_mode;
+                                notify_prev_ui_mode = current_ui_mode;
+                                notify_prev_clock_bright = clock_is_bright;
+                                notify_prev_was_active_chat =
+                                    (app.GetDeviceState() != kDeviceStateIdle);
+                            }
+
+                            notify_has_spoken = false;
+                            notify_timeout_ticks = 100;  // 10秒保護超時
+                            notify_resume_chat_ticks = 0;
+
+                            // 先暫時切到臉部模式並點亮螢幕讓小智開口通知
+                            current_system_mode = 0;
+                            current_ui_mode = 0;
+                            ui_mode_changed = true;
+                            clock_is_bright = true;
+                            clock_dim_countdown = 150;
+                            if (backlight)
+                                backlight->SetBrightness(current_max_brightness);
+
+                            notify_restore_pending = true;
+
+                            if (app.GetDeviceState() == kDeviceStateIdle && ai_single_click_cb) {
+                                ai_single_click_cb();
+                            }
+                        });
+                    }
                     // ⚙️ 情況 2：Android App 即時遙控設定
                     else if (strcmp(type->valuestring, "update_settings") == 0) {
                         int vol = cJSON_GetObjectItem(json, "volume")
@@ -6995,7 +7108,8 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
                                 }
                             });
                     }
-                    // 🎛️ 情況 3：Android App 遠端快速切換模式 (Chat / Sleep / Time / Weather)
+                    // 🎛️ 情況 3：Android App 遠端快速切換模式 (Chat / Sleep / App / Game / Time /
+                    // Weather)
                     else if (strcmp(type->valuestring, "set_mode") == 0) {
                         cJSON* mode_item = cJSON_GetObjectItem(json, "mode");
                         if (mode_item && mode_item->valuestring) {
@@ -7033,6 +7147,30 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
                                     clock_dim_countdown = 0;
                                     if (backlight)
                                         backlight->SetBrightness(BRIGHTNESS_DIM);
+                                } else if (mode_str == "app") {
+                                    // 切換至時間模式
+                                    app.AbortSpeaking(kAbortReasonNone);
+                                    app.StopListening();
+                                    app.SetDeviceState(kDeviceStateIdle);
+                                    current_system_mode = 4;
+                                    current_ui_mode = 4;
+                                    ui_mode_changed = true;
+                                    clock_is_bright = true;
+                                    clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
+                                    if (backlight)
+                                        backlight->SetBrightness(current_max_brightness);
+                                } else if (mode_str == "game") {
+                                    // 切換至時間模式
+                                    app.AbortSpeaking(kAbortReasonNone);
+                                    app.StopListening();
+                                    app.SetDeviceState(kDeviceStateIdle);
+                                    current_system_mode = 1;
+                                    current_ui_mode = 1;
+                                    ui_mode_changed = true;
+                                    clock_is_bright = true;
+                                    clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
+                                    if (backlight)
+                                        backlight->SetBrightness(current_max_brightness);
                                 } else if (mode_str == "time") {
                                     // 切換至時間模式
                                     app.AbortSpeaking(kAbortReasonNone);
