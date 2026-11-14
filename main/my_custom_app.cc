@@ -4021,6 +4021,12 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 ir_status_label = nullptr;
             }
         } else {
+            if (app_menu_selection != APP_TV_REMOTE && bg_tv_remote) {
+                lv_obj_del(bg_tv_remote);
+                bg_tv_remote = nullptr;
+                tv_status_label = nullptr;
+                tv_hint_label = nullptr;
+            }
             if (app_menu_selection != APP_BWA && bg_bwa) {
                 lv_obj_del(bg_bwa);
                 bg_bwa = nullptr;
@@ -5775,8 +5781,21 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         else if (pending_game_action == 4)
             move_2048_down();
         else if (pending_game_action == 5) {
-            // ==================== APP 模式的短按動作 ====================
-            if (current_ui_mode == 5) {
+            if (current_ui_mode == 7 ||
+                (current_ui_mode == 5 && app_menu_selection == APP_TV_REMOTE)) {
+                ESP_LOGI("TV_PWR", "🔘 按鍵觸發開/關電視！");
+                if (global_mqtt_client) {
+                    esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/power", "TOGGLE", 6, 0,
+                                            0);
+                }
+                if (current_ui_mode == 5 && tv_status_label) {
+                    lv_label_set_text(tv_status_label, "POWER!");
+                    lv_obj_set_style_text_color(tv_status_label, lv_color_make(255, 180, 0), 0);
+                    tv_feedback_ticks = 8;
+                } else if (current_ui_mode == 7) {
+                    pending_emotion_cmd = "winking";
+                }
+            } else if (current_ui_mode == 5) {
                 if (app_menu_selection == APP_BWA) {
                     if (bwa_roll_anim_ticks == 0)
                         bwa_roll_anim_ticks = 8;
@@ -8575,7 +8594,8 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
             // Game 選單輪捲
             game_menu_selection = (game_menu_selection + 1) % GAME_MAX;
             ui_mode_changed = true;
-        } else if (current_system_mode == 2 || current_system_mode == 5) {
+        } else if (current_system_mode == 2 || current_system_mode == 5 ||
+                   current_system_mode == 7) {
             // 【修正】確保在過三關中按鈕可以喚醒麥克風
             if (current_system_mode == 2 && game_menu_selection == GAME_TICTACTOE) {
                 if (ttt_game_state == TTT_STATE_START || ttt_game_state == TTT_STATE_GAMEOVER) {
@@ -8632,6 +8652,11 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
             if (ai_long_press_cb) {
                 ai_long_press_cb();
             }
+        } else if (current_system_mode == 7) {
+            current_system_mode = 0;
+            current_ui_mode = 0;
+            pending_emotion_cmd = "neutral";
+            ui_mode_changed = true;
         }
     });
 
@@ -8644,7 +8669,7 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
             // AI 模式 -> 進入 Apps 選單
             current_system_mode = 4;
             current_ui_mode = 4;
-            app_menu_selection = APP_BWA;
+            app_menu_selection = APP_TV_REMOTE;
             if (backlight)
                 backlight->SetBrightness(current_max_brightness);
         } else if (current_system_mode == 4) {
@@ -8666,7 +8691,7 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
             pending_game_action = 7;
             return;
         } else if (current_system_mode == 6 || current_system_mode == 2 ||
-                   current_system_mode == 5) {
+                   current_system_mode == 5 || current_system_mode == 7) {
             // 從天氣(6) 或其他遊戲App雙擊 -> 回血 100% 亮度，回到 AI (0)
             if (backlight)
                 backlight->SetBrightness(current_max_brightness);
