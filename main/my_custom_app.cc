@@ -708,6 +708,8 @@ static void update_weather_icon_ui(const char* desc) {
         if (is_daytime) {
             lv_label_set_text(weather_icon_label, "A");
             lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0xFF9C00), 0);
+            lv_obj_align(weather_icon_container, LV_ALIGN_TOP_LEFT, 2, 4);
+
         } else {
             lv_label_set_text(weather_icon_label, "a");
             lv_obj_set_style_text_color(weather_icon_label, lv_color_hex(0xCCCCCC), 0);
@@ -3292,10 +3294,11 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                     lv_label_set_text(tv_status_label, "READY");
                     lv_obj_set_style_text_font(tv_status_label, &lv_font_montserrat_28, 0);
                     lv_obj_set_style_text_color(tv_status_label, lv_color_white(), 0);
-                    lv_obj_align(tv_status_label, LV_ALIGN_CENTER, 0, -6);
+                    lv_obj_align(tv_status_label, LV_ALIGN_CENTER, 0, -10);
 
                     tv_hint_label = lv_label_create(bg_tv_remote);
                     lv_label_set_text(tv_hint_label, "Press: Power\nTilt: Vol +/-");
+                    lv_obj_set_style_text_line_space(tv_hint_label, -4, 0);
                     lv_obj_set_style_text_align(tv_hint_label, LV_TEXT_ALIGN_CENTER, 0);
                     lv_obj_set_style_text_color(tv_hint_label, lv_color_hex(0xAAAAAA), 0);
                     lv_obj_align(tv_hint_label, LV_ALIGN_BOTTOM_MID, 0, -8);
@@ -4210,18 +4213,18 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     // 通用螢幕背光 5 秒自動變暗倒數 (適用於 AI待機、時間、天氣)
     // ==============================================
     if (current_ui_mode == 3 || current_ui_mode == 6 ||
-        current_ui_mode == 0 && Application::GetInstance().GetDeviceState() == kDeviceStateIdle)) {
-            if (clock_is_bright && clock_dim_countdown > 0) {
-                clock_dim_countdown--;
-                if (clock_dim_countdown == 0) {
-                    auto backlight = Board::GetInstance().GetBacklight();
-                    if (backlight)
-                        backlight->SetBrightness(BRIGHTNESS_DIM);
-                    clock_is_bright = false;
-                    ESP_LOGI("System", "10秒無操作，螢幕自動變暗");
-                }
+        (current_ui_mode == 0 && Application::GetInstance().GetDeviceState() == kDeviceStateIdle)) {
+        if (clock_is_bright && clock_dim_countdown > 0) {
+            clock_dim_countdown--;
+            if (clock_dim_countdown == 0) {
+                auto backlight = Board::GetInstance().GetBacklight();
+                if (backlight)
+                    backlight->SetBrightness(BRIGHTNESS_DIM);
+                clock_is_bright = false;
+                ESP_LOGI("System", "10秒無操作，螢幕自動變暗");
             }
         }
+    }
 
     // --- 時鐘模式：每 1 秒更新一次時間文字。支援點亮、手動/自動 3 秒變暗 ---
     if (current_ui_mode == 3 || current_ui_mode == 6) {
