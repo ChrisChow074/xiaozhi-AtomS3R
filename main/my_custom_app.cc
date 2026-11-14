@@ -960,13 +960,14 @@ static void update_clock_display() {
 // 系統清單對照表 (未來修改順序，只要改這裡就好！)
 // ==========================================
 enum AppIndex {
-    APP_BWA = 0,    // 擲杯
-    APP_MARK6,      // 六合彩
-    APP_LEVEL,      // 新增的水平儀
-    APP_STOPWATCH,  // 碼表
-    APP_TIMER,      // 新增的倒數計時器
-    APP_IR_LEARN,   // 紅外線學習
-    APP_MAX         // 自動計算總數
+    APP_TV_REMOTE = 0,  // 電視遙控 (放在第一個)
+    APP_BWA,            // 擲杯
+    APP_MARK6,          // 六合彩
+    APP_LEVEL,          // 新增的水平儀
+    APP_STOPWATCH,      // 碼表
+    APP_TIMER,          // 新增的倒數計時器
+    APP_IR_LEARN,       // 紅外線學習
+    APP_MAX             // 自動計算總數
 };
 
 enum GameIndex {
@@ -980,21 +981,23 @@ enum GameIndex {
     GAME_MAX          // 自動計算總數
 };
 
-static int app_menu_selection = APP_BWA;
+static int app_menu_selection = APP_TV_REMOTE;
 static int game_menu_selection = GAME_TETRIS;
 
-// ==========================================
+// 電視遙控 (TV Remote) 介面變數
+static lv_obj_t* bg_tv_remote = nullptr;
+static lv_obj_t* tv_status_label = nullptr;
+static lv_obj_t* tv_hint_label = nullptr;
+static int tv_feedback_ticks = 0;
+
 // 水平儀 (Spirit Level) 系統變數
-// ==========================================
 static lv_obj_t* bg_level = nullptr;
 static lv_obj_t* level_target_circle = nullptr;
 static lv_obj_t* inside_circle = nullptr;
 static lv_obj_t* level_bubble = nullptr;
 static lv_obj_t* level_info_label = nullptr;
 
-// ==========================================
 // 倒數計時器 (Timer) 系統變數
-// ==========================================
 enum TimerState { TIMER_IDLE, TIMER_RUNNING, TIMER_PAUSED, TIMER_ALARM };
 static TimerState timer_state = TIMER_IDLE;
 static int64_t timer_total_us = 0;     // 總設定微秒數
@@ -1005,9 +1008,7 @@ static lv_obj_t* timer_time_label = nullptr;
 static lv_obj_t* timer_ms_label = nullptr;  // 新增：毫秒標籤
 static lv_obj_t* timer_status_label = nullptr;
 
-// ==========================================
 // 碼表 (Stop Watch) 系統變數
-// ==========================================
 enum StopwatchState { SW_IDLE, SW_RUNNING, SW_PAUSED };
 static StopwatchState sw_state = SW_IDLE;
 static int64_t sw_start_time_us = 0;
@@ -1017,9 +1018,7 @@ static lv_obj_t* sw_time_label = nullptr;
 static lv_obj_t* sw_ms_label = nullptr;  // 毫秒標籤
 static lv_obj_t* sw_status_label = nullptr;
 
-// ==========================================
 //        過三關 (Tic-Tac-Toe) 系統變數
-// ==========================================
 enum TicTacToeState { TTT_STATE_START, TTT_STATE_PLAYING, TTT_STATE_PAUSE, TTT_STATE_GAMEOVER };
 
 static lv_obj_t* bg_tictactoe = nullptr;
@@ -1039,9 +1038,7 @@ static TicTacToeState ttt_game_state = TTT_STATE_START;
 static bool ttt_user_turn = true;   // 紀錄現在是誰的回合
 static int ttt_ai_delay_ticks = 0;  // 讓電腦假裝思考一下的計時器
 
-// ==========================================
 // 紅外線學習 (IR Learn) 系統變數
-// ==========================================
 enum IRLearnState { IR_STATE_IDLE, IR_STATE_LEARNING, IR_STATE_SUCCESS, IR_STATE_FAIL };
 static IRLearnState ir_state = IR_STATE_IDLE;
 // 👇 加入這行，用來記錄當前要存取哪個紅外線指令
@@ -1051,9 +1048,7 @@ static lv_obj_t* ir_title_label = nullptr;
 static lv_obj_t* ir_icon_label = nullptr;    // 顯示大圖標
 static lv_obj_t* ir_status_label = nullptr;  // 顯示提示文字
 
-// ==========================================
 // M5PM1 電源控制：為紅外線模組供電
-// ==========================================
 static void m5pm1_set_ext_5v(bool enable) {
     if (!shared_i2c_bus)
         return;
@@ -1080,9 +1075,7 @@ static void m5pm1_set_ext_5v(bool enable) {
     }
 }
 
-// ==========================================
 // 紅外線學習 (IR Learn) RMT 驅動與 Task
-// ==========================================
 static rmt_symbol_word_t ir_raw_symbols[512];
 static size_t ir_symbol_count = 0;
 
@@ -1095,9 +1088,7 @@ static bool ir_rx_done_cb(rmt_channel_handle_t rx_chan, const rmt_rx_done_event_
     return high_task_wakeup == pdTRUE;
 }
 
-// ------------------------------------------
 // 紅外線學習 (RX) Task 【硬體+軟體雙重抗噪版】
-// ------------------------------------------
 static void ir_learn_task(void* arg) {
     ESP_LOGI("IR", "Task 啟動：開啟 5V 供電給紅外線接收器！");
 
@@ -3014,6 +3005,25 @@ void CustomApp_OnChatMessage(const char* role, const char* content) {
             });
 
         }
+        // 電視遙控指令
+        else if (text.find("電視遙控") != std::string::npos ||
+                 text.find("电视遥控") != std::string::npos ||
+                 text.find("電視音量") != std::string::npos ||
+                 text.find("电视音量") != std::string::npos ||
+                 text.find("TV Remote") != std::string::npos) {
+            ESP_LOGI("VoiceCmd", "語音指令：啟動電視遙控");
+            current_system_mode = 5;
+            current_ui_mode = 5;
+            app_menu_selection = APP_TV_REMOTE;
+            ui_mode_changed = true;
+
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                app.AbortSpeaking(kAbortReasonNone);
+                app.StopListening();
+                app.SetDeviceState(kDeviceStateIdle);
+            });
+        }
         // 2. 六合彩指令
         else if (text.find("六合彩") != std::string::npos ||
                  text.find("六合") != std::string::npos) {
@@ -3958,6 +3968,12 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         }
 
         if (current_ui_mode != 5) {
+            if (bg_tv_remote) {
+                lv_obj_del(bg_tv_remote);
+                bg_tv_remote = nullptr;
+                tv_status_label = nullptr;
+                tv_hint_label = nullptr;
+            }
             if (bg_bwa) {
                 lv_obj_del(bg_bwa);
                 bg_bwa = nullptr;
@@ -4105,8 +4121,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             if (current_ui_mode == 4) {
                 lv_obj_set_style_bg_color(game_menu_bg, lv_color_hex(0x000ec7), 0);
                 lv_label_set_text(menu_title_label, "APP MODE");
-                const char* app_texts[] = {"Moon\nBlock", "Mark 6", "Spirit\nLevel",
-                                           "Stop\nWatch", "Timer",  "IR Learn"};
+                const char* app_texts[] = {"TV\nRemote",  "Moon\nBlock", "Mark 6",  "Spirit\nLevel",
+                                           "Stop\nWatch", "Timer",       "IR Learn"};
                 lv_label_set_text(game_menu_label, app_texts[app_menu_selection]);
             } else {
                 lv_obj_set_style_bg_color(game_menu_bg, lv_color_hex(0x57007b), 0);
@@ -4124,7 +4140,36 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
 
             return;
         } else if (current_ui_mode == 5) {  // --- 進入 APP 模式 ---
-            if (app_menu_selection == APP_BWA) {
+            if (app_menu_selection == APP_TV_REMOTE) {
+                if (!bg_tv_remote) {
+                    bg_tv_remote = lv_obj_create(lv_scr_act());
+                    lv_obj_set_size(bg_tv_remote, LCD_W, LCD_H);
+                    lv_obj_set_style_bg_color(bg_tv_remote, lv_color_black(), 0);
+                    lv_obj_set_style_border_width(bg_tv_remote, 0, 0);
+                    lv_obj_set_style_radius(bg_tv_remote, 0, 0);
+                    lv_obj_set_style_pad_all(bg_tv_remote, 0, 0);
+
+                    lv_obj_t* title = lv_label_create(bg_tv_remote);
+                    lv_label_set_text(title, "TV REMOTE");
+                    lv_obj_set_style_text_color(title, lv_color_make(0, 255, 255), 0);
+                    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 16);
+
+                    tv_status_label = lv_label_create(bg_tv_remote);
+                    lv_label_set_text(tv_status_label, "READY");
+                    lv_obj_set_style_text_font(tv_status_label, &lv_font_montserrat_28, 0);
+                    lv_obj_set_style_text_color(tv_status_label, lv_color_white(), 0);
+                    lv_obj_align(tv_status_label, LV_ALIGN_CENTER, 0, -10);
+
+                    tv_hint_label = lv_label_create(bg_tv_remote);
+                    lv_label_set_text(tv_hint_label, "Press: Power\nTilt: Vol +/-");
+                    lv_obj_set_style_text_align(tv_hint_label, LV_TEXT_ALIGN_CENTER, 0);
+                    lv_obj_set_style_text_color(tv_hint_label, lv_color_hex(0xAAAAAA), 0);
+                    lv_obj_align(tv_hint_label, LV_ALIGN_BOTTOM_MID, 0, -18);
+                }
+                lv_obj_remove_flag(bg_tv_remote, LV_OBJ_FLAG_HIDDEN);
+                tv_feedback_ticks = 0;
+                return;
+            } else if (app_menu_selection == APP_BWA) {
                 // ==================== 擲杯 啟動邏輯 ====================
                 if (!bg_bwa) {
                     bg_bwa = lv_obj_create(lv_scr_act());
@@ -5662,57 +5707,64 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
     }
 
     // 👇👇👇 新增：【模式 7】體感電視音量旋鈕 ===================
-    if (current_ui_mode == 7 && imu_initialized) {
-        // 防止螢幕休眠，保持亮度
+    if (((current_ui_mode == 7) || (current_ui_mode == 5 && app_menu_selection == APP_TV_REMOTE)) &&
+        imu_initialized) {
         clock_is_bright = true;
-        clock_dim_countdown = 100;  // 刷新防休眠計時
+        clock_dim_countdown = 100;
+        idle_to_clock_counter = 0;
 
         static int vol_cooldown = 0;
         if (vol_cooldown > 0)
             vol_cooldown--;
-
-        // 設定傾斜觸發門檻 (4096 = 1g，設定 2000 大約 30度角，可自行微調手感)
-        // 門檻可以稍微調低一點 (例如 1500)，輕輕轉就能調音量
-        const int16_t TILT_THRESHOLD = 1500;
-
-        if (vol_cooldown == 0) {
-            if (global_accel_x > TILT_THRESHOLD) {
-                // 右傾 -> 大聲
-                if (global_mqtt_client) {
-                    // "UP" 字串長度為 2
-                    esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/volume", "UP", 2, 0, 0);
-                    ESP_LOGI("TV_VOL", "🔼 右傾 - 增加音量");
-                }
-                if (current_active_emotion != "happy") {
-                    pending_emotion_cmd = "happy";  // 扭動時笑一下
-                }
-                vol_cooldown = 5;  // 300ms 冷卻，避免音量暴增
-
-            } else if (global_accel_x < -TILT_THRESHOLD) {
-                // 左傾 -> 細聲
-                if (global_mqtt_client) {
-                    // "DOWN" 字串長度為 4
-                    esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/volume", "DOWN", 4, 0,
-                                            0);
-                    ESP_LOGI("TV_VOL", "🔽 左傾 - 減少音量");
-                }
-                if (current_active_emotion != "surprised") {
-                    pending_emotion_cmd = "surprised";  // 扭動時驚訝一下
-                }
-                vol_cooldown = 5;  // 300ms 冷卻
+        if (tv_feedback_ticks > 0) {
+            tv_feedback_ticks--;
+            if (tv_feedback_ticks == 0 && current_ui_mode == 5 && tv_status_label) {
+                lv_label_set_text(tv_status_label, "READY");
+                lv_obj_set_style_text_color(tv_status_label, lv_color_white(), 0);
             }
         }
 
-        // 當手勢回到正中間時 (平放)，恢復帥氣的墨鏡表情
-        if (abs(global_accel_x) < 800) {
-            if (current_active_emotion != "cool") {
-                pending_emotion_cmd = "cool";
+        const int16_t TILT_THRESHOLD = 1500;
+        if (vol_cooldown == 0) {
+            if (global_accel_x > TILT_THRESHOLD) {
+                if (global_mqtt_client) {
+                    esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/volume", "UP", 2, 0, 0);
+                }
+                if (current_ui_mode == 7) {
+                    if (current_active_emotion != "happy")
+                        pending_emotion_cmd = "happy";
+                } else if (tv_status_label) {
+                    lv_label_set_text(tv_status_label, "VOL +");
+                    lv_obj_set_style_text_color(tv_status_label, lv_color_hex(0x00FF66), 0);
+                    tv_feedback_ticks = 6;
+                }
+                vol_cooldown = 5;
+            } else if (global_accel_x < -TILT_THRESHOLD) {
+                if (global_mqtt_client) {
+                    esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/volume", "DOWN", 4, 0,
+                                            0);
+                }
+                if (current_ui_mode == 7) {
+                    if (current_active_emotion != "surprised")
+                        pending_emotion_cmd = "surprised";
+                } else if (tv_status_label) {
+                    lv_label_set_text(tv_status_label, "VOL -");
+                    lv_obj_set_style_text_color(tv_status_label, lv_color_make(0, 255, 255), 0);
+                    tv_feedback_ticks = 6;
+                }
+                vol_cooldown = 5;
             }
+        }
+
+        if (current_ui_mode == 7 && abs(global_accel_x) < 800) {
+            if (current_active_emotion != "cool")
+                pending_emotion_cmd = "cool";
         }
     }
 
     // 安全地在 LVGL 執行緒裡處理遊戲動作 (方向 1~4，按鍵動作 5)
-    if ((current_ui_mode == 2 || current_ui_mode == 5) && pending_game_action != 0) {
+    if ((current_ui_mode == 2 || current_ui_mode == 5 || current_ui_mode == 7) &&
+        pending_game_action != 0) {
         idle_to_clock_counter = 0;  // 👈 只要有操作，重置閒置計時器
         if (pending_game_action == 1)
             move_2048_left();
