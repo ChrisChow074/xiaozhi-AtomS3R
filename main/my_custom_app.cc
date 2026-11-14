@@ -3166,6 +3166,12 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 level_info_label = nullptr;
             }
         } else {
+            if (app_menu_selection != APP_TV_REMOTE && bg_tv_remote) {
+                lv_obj_del(bg_tv_remote);
+                bg_tv_remote = nullptr;
+                tv_status_label = nullptr;
+                tv_hint_label = nullptr;
+            }
             if (app_menu_selection != APP_BWA && bg_bwa) {
                 lv_obj_del(bg_bwa);
                 bg_bwa = nullptr;
