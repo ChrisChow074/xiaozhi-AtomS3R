@@ -14,6 +14,7 @@
 #include "esp_http_client.h"
 #include "esp_mac.h"
 #include "esp_random.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mqtt_client.h"
@@ -108,7 +109,10 @@ static char mqtt_status_topic[64];
 static bool clock_is_bright = false;   // 目前是否為高亮狀態
 static int clock_dim_countdown = 0;    // 倒數計時器 (每 100ms 扣 1)
 const int CLOCK_DIM_TIMEOUT_SEC = 10;  // 亮起後等待幾秒自動變暗 (可自行改成 3 或 5 秒)
-#define BRIGHTNESS_DIM 2
+int current_dim_brightness = 5;
+int current_auto_clock_sec = 180;  // 自動進時間模式秒數 (預設 3 分鐘，0 = 關閉)
+bool current_clock_24h = false;    // 時鐘格式 (false: 12H, true: 24H)
+#define BRIGHTNESS_DIM current_dim_brightness
 int current_max_brightness = 100;
 
 static const char* pending_emotion_cmd = nullptr;  // 用來安全傳遞表情指令
@@ -828,7 +832,7 @@ static void update_clock_display() {
     char date_str[32];
     // strftime(time_str, sizeof(time_str), "%H:%M", &timeinfo); //24小時制
     // strftime(time_str, sizeof(time_str), "%I:%M%P", &timeinfo);    // 12小時制有AM/PM
-    strftime(hour_str, sizeof(hour_str), "%I", &timeinfo);
+    strftime(hour_str, sizeof(hour_str), current_clock_24h ? "%H" : "%I", &timeinfo);
     strftime(min_str, sizeof(min_str), "%M", &timeinfo);
 
     if (!is_landscape) {
@@ -6708,11 +6712,12 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         DeviceState sys_state = Application::GetInstance().GetDeviceState();
 
         // 只要不是正在講話或聆聽，且不在時鐘模式，就累加計時器
-        if (sys_state == kDeviceStateIdle && current_ui_mode != 3) {
+        if (sys_state == kDeviceStateIdle && current_ui_mode != 3 &&
+            (is_tarot_mode || current_auto_clock_sec > 0)) {
             idle_to_clock_counter++;
 
-            // 塔羅模式(15分鐘=9000)，其他模式(3分鐘=1800)
-            int timeout_limit = is_tarot_mode ? 9000 : 1800;
+            // 塔羅模式(15分鐘=9000)，其他模式依照 App 設定秒數 (sec * 10)
+            int timeout_limit = is_tarot_mode ? 9000 : (current_auto_clock_sec * 10);
 
             // 【防呆保護】：如果計時器或碼表正在運行中，絕對不能強制退出！
             if (current_ui_mode == 5) {
@@ -7125,6 +7130,15 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
                         int bright = cJSON_GetObjectItem(json, "brightness")
                                          ? cJSON_GetObjectItem(json, "brightness")->valueint
                                          : 100;
+                        int dim_b = cJSON_GetObjectItem(json, "dim_brightness")
+                                        ? cJSON_GetObjectItem(json, "dim_brightness")->valueint
+                                        : current_dim_brightness;
+                        int auto_clk = cJSON_GetObjectItem(json, "auto_clock_sec")
+                                           ? cJSON_GetObjectItem(json, "auto_clock_sec")->valueint
+                                           : current_auto_clock_sec;
+                        bool is_24h = cJSON_GetObjectItem(json, "clock_24h")
+                                          ? cJSON_IsTrue(cJSON_GetObjectItem(json, "clock_24h"))
+                                          : current_clock_24h;
                         int color_idx = cJSON_GetObjectItem(json, "avatar_color")
                                             ? cJSON_GetObjectItem(json, "avatar_color")->valueint
                                             : 1;
@@ -7148,36 +7162,53 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
                         }
 
                         ESP_LOGI("MQTT",
-                                 "⚙️ 收到即時設定更新: Vol:%d, Bright:%d, Theme:%s, Color:%d", vol,
-                                 bright, safe_theme.c_str(), color_idx);
+                                 "⚙️ 收到即時設定更新: Vol:%d, Bright:%d, Dim:%d, AutoClk:%d, "
+                                 "24H:%d, Theme:%s, Color:%d",
+                                 vol, bright, dim_b, auto_clk, (int)is_24h, safe_theme.c_str(),
+                                 color_idx);
 
                         // 安排在主執行緒中更新 UI 與硬體
-                        Application::GetInstance().Schedule(
-                            [vol, bright, color_idx, theme_str_copy = safe_theme]() {
-                                // 1. 音量
-                                auto codec = Board::GetInstance().GetAudioCodec();
-                                if (codec)
-                                    codec->SetOutputVolume(vol);
+                        Application::GetInstance().Schedule([vol, bright, dim_b, auto_clk, is_24h,
+                                                             color_idx,
+                                                             theme_str_copy = safe_theme]() {
+                            auto codec = Board::GetInstance().GetAudioCodec();
+                            if (codec)
+                                codec->SetOutputVolume(vol);
 
-                                // 2. 亮度
-                                current_max_brightness = bright;
-                                auto backlight = Board::GetInstance().GetBacklight();
-                                if (backlight)
+                            bool dim_changed = (dim_b != current_dim_brightness);
+                            current_max_brightness = bright;
+                            current_dim_brightness = dim_b;
+                            current_auto_clock_sec = auto_clk;
+                            current_clock_24h = is_24h;
+
+                            auto backlight = Board::GetInstance().GetBacklight();
+                            if (backlight) {
+                                if (dim_changed) {
+                                    // 拖動暗屏亮度時即時預覽暗屏效果
+                                    clock_is_bright = false;
+                                    clock_dim_countdown = 0;
+                                    backlight->SetBrightness(current_dim_brightness);
+                                } else {
+                                    clock_is_bright = true;
+                                    clock_dim_countdown = CLOCK_DIM_TIMEOUT_SEC * 10;
                                     backlight->SetBrightness(bright);
-
-                                // 3. 主題 (Dark/Light)
-                                auto theme_obj =
-                                    LvglThemeManager::GetInstance().GetTheme(theme_str_copy);
-                                if (theme_obj && Board::GetInstance().GetDisplay()) {
-                                    Board::GetInstance().GetDisplay()->SetTheme(theme_obj);
                                 }
+                            }
 
-                                // 4. 臉部顏色
-                                if (auto disp = Board::GetInstance().GetDisplay()) {
-                                    DisplayLockGuard lock(disp);
-                                    apply_avatar_color(color_idx);
+                            auto theme_obj =
+                                LvglThemeManager::GetInstance().GetTheme(theme_str_copy);
+                            if (theme_obj && Board::GetInstance().GetDisplay()) {
+                                Board::GetInstance().GetDisplay()->SetTheme(theme_obj);
+                            }
+
+                            if (auto disp = Board::GetInstance().GetDisplay()) {
+                                DisplayLockGuard lock(disp);
+                                apply_avatar_color(color_idx);
+                                if (current_ui_mode == 3) {
+                                    update_clock_display();
                                 }
-                            });
+                            }
+                        });
                     }
                     // 🎛️ 情況 3：Android App 遠端快速切換模式 (Chat / Sleep / App / Game / Time /
                     // Weather)
@@ -7277,6 +7308,14 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
                                 }
                             });
                         }
+                    } else if (strcmp(type->valuestring, "reboot") == 0) {
+                        ESP_LOGW("MQTT", "🔄 收到遠端重啟指令，即將重新開機...");
+                        if (global_mqtt_client) {
+                            esp_mqtt_client_publish(global_mqtt_client, mqtt_status_topic,
+                                                    "offline", 7, 1, 1);
+                        }
+                        vTaskDelay(pdMS_TO_TICKS(300));
+                        esp_restart();
                     }
                 }
                 cJSON_Delete(json);
@@ -7326,6 +7365,16 @@ static void mqtt_init_task(void* pvParameters) {
                             int bright = cJSON_GetObjectItem(json, "brightness")
                                              ? cJSON_GetObjectItem(json, "brightness")->valueint
                                              : 100;
+                            int dim_b = cJSON_GetObjectItem(json, "dim_brightness")
+                                            ? cJSON_GetObjectItem(json, "dim_brightness")->valueint
+                                            : current_dim_brightness;
+                            int auto_clk =
+                                cJSON_GetObjectItem(json, "auto_clock_sec")
+                                    ? cJSON_GetObjectItem(json, "auto_clock_sec")->valueint
+                                    : current_auto_clock_sec;
+                            bool is_24h = cJSON_GetObjectItem(json, "clock_24h")
+                                              ? cJSON_IsTrue(cJSON_GetObjectItem(json, "clock_24h"))
+                                              : current_clock_24h;
                             int color_idx =
                                 cJSON_GetObjectItem(json, "avatar_color")
                                     ? cJSON_GetObjectItem(json, "avatar_color")->valueint
@@ -7338,14 +7387,20 @@ static void mqtt_init_task(void* pvParameters) {
                                 theme_str = cJSON_GetObjectItem(json, "theme")->valuestring;
                             }
 
-                            ESP_LOGI(
-                                "Settings",
-                                "✅ 開機成功獲取雲端設定: Vol:%d, Bright:%d, Theme:%s, Color:%d",
-                                vol, bright, theme_str, color_idx);
+                            ESP_LOGI("Settings",
+                                     "✅ 開機成功獲取雲端設定: Vol:%d, Bright:%d, Dim:%d, "
+                                     "AutoClk:%d, 24H:%d, Theme:%s, Color:%d",
+                                     vol, bright, dim_b, auto_clk, (int)is_24h,
+                                     theme_str ? theme_str : "dark", color_idx);
 
                             Application::GetInstance().Schedule(
-                                [vol, bright, color_idx,
+                                [vol, bright, dim_b, auto_clk, is_24h, color_idx,
                                  theme_str_copy = std::string(theme_str)]() {
+                                    current_max_brightness = bright;
+                                    current_dim_brightness = dim_b;
+                                    current_auto_clock_sec = auto_clk;
+                                    current_clock_24h = is_24h;
+
                                     auto codec = Board::GetInstance().GetAudioCodec();
                                     if (codec)
                                         codec->SetOutputVolume(vol);
