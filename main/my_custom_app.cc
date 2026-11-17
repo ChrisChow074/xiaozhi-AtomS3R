@@ -525,6 +525,13 @@ static void touch_wake_task(void* pvParameters) {
                     is_touching = false;
                     touch_cooldown = 10;
                 }
+                // 情況 0.5：在 APP 模式內摸一下 G1 -> 交給 timer 判斷是否為 TV Remote 第2頁 BACK
+                else if (current_system_mode == 5) {
+                    pending_game_action = 9;
+                    g1_tap_wait_ticks = 0;
+                    is_touching = false;
+                    touch_cooldown = 8;
+                }
                 // 情況 A：如果在時鐘或天氣模式 -> 切回 AI 臉蛋並喚醒麥克風
                 else if (current_system_mode == 3 || current_system_mode == 6) {
                     auto backlight = Board::GetInstance().GetBacklight();
@@ -1022,6 +1029,29 @@ static lv_obj_t* bg_tv_remote = nullptr;
 static lv_obj_t* tv_status_label = nullptr;
 static lv_obj_t* tv_hint_label = nullptr;
 static int tv_feedback_ticks = 0;
+static lv_display_rotation_t current_atom_rot = LV_DISPLAY_ROTATION_0;
+static int tv_remote_page = 0;       // 0: 第1頁(音量/電源), 1: 第2頁(上下左右/OK)
+static int16_t tv_dpad_base_y = 0;   // 進入第2頁時自動記憶手腕上下零點
+static bool tv_vol_locked = false;   // 第1頁音量單次擺動鎖定
+static bool tv_dpad_locked = false;  // 第2頁方向單次擺動鎖定
+
+static void update_tv_remote_page_ui() {
+    if (!bg_tv_remote || !tv_status_label || !tv_hint_label)
+        return;
+    tv_feedback_ticks = 0;
+    tv_vol_locked = false;
+    tv_dpad_locked = false;
+    if (tv_remote_page == 0) {
+        lv_label_set_text(tv_status_label, "READY");
+        lv_obj_set_style_text_color(tv_status_label, lv_color_white(), 0);
+        lv_label_set_text(tv_hint_label, "Click: Power\nHold: D-Pad");
+    } else {
+        tv_dpad_base_y = global_accel_y;
+        lv_label_set_text(tv_status_label, "D-PAD");
+        lv_obj_set_style_text_color(tv_status_label, lv_color_make(255, 200, 0), 0);
+        lv_label_set_text(tv_hint_label, "Click:OK G1:Back\nHold: Vol Page");
+    }
+}
 
 // ==========================================
 // 水平儀 (Spirit Level) 系統變數
@@ -3290,6 +3320,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             return;
         } else if (current_ui_mode == 5) {  // --- 進入 APP 模式 ---
             if (app_menu_selection == APP_TV_REMOTE) {
+                current_atom_rot = LV_DISPLAY_ROTATION_0;
+                lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_0);
                 if (!bg_tv_remote) {
                     bg_tv_remote = lv_obj_create(lv_scr_act());
                     lv_obj_set_size(bg_tv_remote, LCD_W, LCD_H);
@@ -3317,7 +3349,11 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                     lv_obj_align(tv_hint_label, LV_ALIGN_BOTTOM_MID, 0, -8);
                 }
                 lv_obj_remove_flag(bg_tv_remote, LV_OBJ_FLAG_HIDDEN);
-                tv_feedback_ticks = 0;
+                lv_obj_remove_flag(bg_tv_remote, LV_OBJ_FLAG_HIDDEN);
+                tv_remote_page = 0;
+                update_tv_remote_page_ui();
+                if (!imu_initialized)
+                    imu_init();
                 return;
             } else if (app_menu_selection == APP_BWA) {
                 // ==================== 擲杯 啟動邏輯 ====================
@@ -4314,12 +4350,9 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             // =======================================================
             // 🔄 智慧螢幕 4 向翻轉引擎 (專為 AtomS3R 正方形螢幕設計)
             // =======================================================
-            // 將 current_rot 提昇到外層，讓後面的校準引擎也能讀取目前的角度
-            static lv_display_rotation_t current_rot = LV_DISPLAY_ROTATION_0;
-
             if (current_ui_mode == 0 || current_ui_mode == 3 || current_ui_mode == 6) {
                 const int16_t FLIP_THRESHOLD = 5000;
-                lv_display_rotation_t target_rot = current_rot;
+                lv_display_rotation_t target_rot = current_atom_rot;
 
                 if (current_rotate_mode == "portrait") {
                     target_rot = LV_DISPLAY_ROTATION_0;
@@ -4328,8 +4361,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                         target_rot = LV_DISPLAY_ROTATION_90;
                     } else if (accel_x < -FLIP_THRESHOLD) {
                         target_rot = LV_DISPLAY_ROTATION_270;
-                    } else if (current_rot != LV_DISPLAY_ROTATION_90 &&
-                               current_rot != LV_DISPLAY_ROTATION_270) {
+                    } else if (current_atom_rot != LV_DISPLAY_ROTATION_90 &&
+                               current_atom_rot != LV_DISPLAY_ROTATION_270) {
                         target_rot = LV_DISPLAY_ROTATION_90;
                     }
                 } else {
@@ -4344,9 +4377,9 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                     }
                 }
 
-                if (target_rot != current_rot) {
-                    current_rot = target_rot;
-                    lv_display_set_rotation(lv_display_get_default(), current_rot);
+                if (target_rot != current_atom_rot) {
+                    current_atom_rot = target_rot;
+                    lv_display_set_rotation(lv_display_get_default(), current_atom_rot);
                 }
             }
 
@@ -4376,16 +4409,16 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             int16_t ui_x = 0;
             int16_t ui_y = 0;
 
-            if (current_rot == LV_DISPLAY_ROTATION_0) {
+            if (current_atom_rot == LV_DISPLAY_ROTATION_0) {
                 ui_x = dyn_x;
                 ui_y = dyn_y;
-            } else if (current_rot == LV_DISPLAY_ROTATION_90) {
+            } else if (current_atom_rot == LV_DISPLAY_ROTATION_90) {
                 ui_x = -dyn_y;
                 ui_y = dyn_x;
-            } else if (current_rot == LV_DISPLAY_ROTATION_180) {
+            } else if (current_atom_rot == LV_DISPLAY_ROTATION_180) {
                 ui_x = -dyn_x;
                 ui_y = -dyn_y;
-            } else if (current_rot == LV_DISPLAY_ROTATION_270) {
+            } else if (current_atom_rot == LV_DISPLAY_ROTATION_270) {
                 ui_x = dyn_y;
                 ui_y = -dyn_x;
             }
@@ -4592,9 +4625,7 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         }
     }
 
-    // ==============================================
-    // 🎛️ 電視遙控體感音量引擎 (Mode 7 快捷模式 & Mode 5 App模式共用)
-    // ==============================================
+    // 👇👇👇 【模式 7】體感音量旋鈕 & 【APP TV Remote 第1/2頁】 ===================
     if (((current_ui_mode == 7) || (current_ui_mode == 5 && app_menu_selection == APP_TV_REMOTE)) &&
         imu_initialized) {
         clock_is_bright = true;
@@ -4604,11 +4635,17 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         static int vol_cooldown = 0;
         if (vol_cooldown > 0)
             vol_cooldown--;
+
         if (tv_feedback_ticks > 0) {
             tv_feedback_ticks--;
             if (tv_feedback_ticks == 0 && current_ui_mode == 5 && tv_status_label) {
-                lv_label_set_text(tv_status_label, "READY");
-                lv_obj_set_style_text_color(tv_status_label, lv_color_white(), 0);
+                if (tv_remote_page == 0) {
+                    lv_label_set_text(tv_status_label, "READY");
+                    lv_obj_set_style_text_color(tv_status_label, lv_color_white(), 0);
+                } else {
+                    lv_label_set_text(tv_status_label, "D-PAD");
+                    lv_obj_set_style_text_color(tv_status_label, lv_color_make(255, 200, 0), 0);
+                }
             }
         }
 
@@ -4617,40 +4654,82 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         if (tilt_thresh < 400)
             tilt_thresh = 400;
 
-        if (vol_cooldown == 0) {
-            if (adj_accel_x > tilt_thresh) {
-                if (global_mqtt_client) {
-                    esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/volume", "UP", 2, 0, 0);
+        // ------------------------------------------
+        // 第 1 頁 (或 Mode 7)：左右傾斜控制音量
+        // ------------------------------------------
+        if (current_ui_mode == 7 || tv_remote_page == 0) {
+            if (vol_cooldown == 0) {
+                if (adj_accel_x > tilt_thresh) {
+                    if (global_mqtt_client) {
+                        esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/volume", "UP", 2, 0,
+                                                0);
+                    }
+                    if (current_ui_mode == 7) {
+                        if (current_active_emotion != "happy")
+                            pending_emotion_cmd = "happy";
+                    } else if (tv_status_label) {
+                        lv_label_set_text(tv_status_label, "VOL +");
+                        lv_obj_set_style_text_color(tv_status_label, lv_color_hex(0x00FF66), 0);
+                        tv_feedback_ticks = 6;
+                    }
+                    vol_cooldown = 5;
+                } else if (adj_accel_x < -tilt_thresh) {
+                    if (global_mqtt_client) {
+                        esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/volume", "DOWN", 4,
+                                                0, 0);
+                    }
+                    if (current_ui_mode == 7) {
+                        if (current_active_emotion != "surprised")
+                            pending_emotion_cmd = "surprised";
+                    } else if (tv_status_label) {
+                        lv_label_set_text(tv_status_label, "VOL -");
+                        lv_obj_set_style_text_color(tv_status_label, lv_color_make(0, 255, 255), 0);
+                        tv_feedback_ticks = 6;
+                    }
+                    vol_cooldown = 5;
                 }
-                if (current_ui_mode == 7) {
-                    if (current_active_emotion != "happy")
-                        pending_emotion_cmd = "happy";
-                } else if (tv_status_label) {
-                    lv_label_set_text(tv_status_label, "VOL +");
-                    lv_obj_set_style_text_color(tv_status_label, lv_color_hex(0x00FF66), 0);
-                    tv_feedback_ticks = 6;
-                }
-                vol_cooldown = 5;
-            } else if (adj_accel_x < -tilt_thresh) {
-                if (global_mqtt_client) {
-                    esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/volume", "DOWN", 4, 0,
-                                            0);
-                }
-                if (current_ui_mode == 7) {
-                    if (current_active_emotion != "surprised")
-                        pending_emotion_cmd = "surprised";
-                } else if (tv_status_label) {
-                    lv_label_set_text(tv_status_label, "VOL -");
-                    lv_obj_set_style_text_color(tv_status_label, lv_color_make(0, 255, 255), 0);
-                    tv_feedback_ticks = 6;
-                }
-                vol_cooldown = 5;
+            }
+
+            if (current_ui_mode == 7 && abs(adj_accel_x) < (tilt_thresh / 2)) {
+                if (current_active_emotion != "cool")
+                    pending_emotion_cmd = "cool";
             }
         }
+        // ------------------------------------------
+        // 第 2 頁：單次擺動控制 上下左右 (前傾=DOWN / 後傾=UP)
+        // ------------------------------------------
+        else if (current_ui_mode == 5 && tv_remote_page == 1) {
+            int16_t adj_accel_y = global_accel_y - tv_dpad_base_y;
+            int16_t unlock_thresh = tilt_thresh / 2;
 
-        if (current_ui_mode == 7 && abs(adj_accel_x) < (tilt_thresh / 2)) {
-            if (current_active_emotion != "cool")
-                pending_emotion_cmd = "cool";
+            if (!tv_dpad_locked) {
+                const char* dpad_cmd = nullptr;
+                if (abs(adj_accel_x) > tilt_thresh || abs(adj_accel_y) > tilt_thresh) {
+                    if (abs(adj_accel_x) > abs(adj_accel_y)) {
+                        dpad_cmd = (adj_accel_x > 0) ? "RIGHT" : "LEFT";
+                    } else {
+                        dpad_cmd = (adj_accel_y > 0) ? "DOWN" : "UP";  // 前傾=DOWN, 後傾=UP
+                    }
+                }
+
+                if (dpad_cmd != nullptr) {
+                    tv_dpad_locked = true;  // 觸發一次後立刻鎖定，必須回正才可下次觸發
+                    if (global_mqtt_client) {
+                        esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/dpad", dpad_cmd,
+                                                strlen(dpad_cmd), 0, 0);
+                    }
+                    if (tv_status_label) {
+                        lv_label_set_text(tv_status_label, dpad_cmd);
+                        lv_obj_set_style_text_color(tv_status_label, lv_color_make(0, 255, 255), 0);
+                        tv_feedback_ticks = 6;
+                    }
+                }
+            } else {
+                // 手腕回到中心區附近才解鎖，準備下一次擺動
+                if (abs(adj_accel_x) < unlock_thresh && abs(adj_accel_y) < unlock_thresh) {
+                    tv_dpad_locked = false;
+                }
+            }
         }
     }
 
@@ -4668,7 +4747,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             move_2048_down();
         else if (pending_game_action == 5) {
             if (current_ui_mode == 7 ||
-                (current_ui_mode == 5 && app_menu_selection == APP_TV_REMOTE)) {
+                (current_ui_mode == 5 && app_menu_selection == APP_TV_REMOTE &&
+                 tv_remote_page == 0)) {
                 ESP_LOGI("TV_PWR", "🔘 按鍵觸發開/關電視！");
                 if (global_mqtt_client) {
                     esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/power", "TOGGLE", 6, 0,
@@ -4680,6 +4760,17 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                     tv_feedback_ticks = 8;
                 } else if (current_ui_mode == 7) {
                     pending_emotion_cmd = "winking";
+                }
+            } else if (current_ui_mode == 5 && app_menu_selection == APP_TV_REMOTE &&
+                       tv_remote_page == 1) {
+                ESP_LOGI("TV_DPAD", "🔘 按鍵觸發 OK！");
+                if (global_mqtt_client) {
+                    esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/dpad", "OK", 2, 0, 0);
+                }
+                if (tv_status_label) {
+                    lv_label_set_text(tv_status_label, "OK");
+                    lv_obj_set_style_text_color(tv_status_label, lv_color_hex(0x00FF66), 0);
+                    tv_feedback_ticks = 6;
                 }
             } else if (current_ui_mode == 5) {
                 if (app_menu_selection == APP_BWA) {
@@ -4975,6 +5066,24 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                         snake_init_game();
                         update_snake_ui();
                     }
+                }
+            }
+        } else if (pending_game_action == 8) {
+            if (current_ui_mode == 5 && app_menu_selection == APP_TV_REMOTE) {
+                tv_remote_page = (tv_remote_page == 0) ? 1 : 0;
+                update_tv_remote_page_ui();
+            }
+        } else if (pending_game_action == 9) {
+            if (current_ui_mode == 5 && app_menu_selection == APP_TV_REMOTE &&
+                tv_remote_page == 1) {
+                ESP_LOGI("TV_DPAD", "🔙 G1 觸發 BACK 返回鍵！");
+                if (global_mqtt_client) {
+                    esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/dpad", "BACK", 4, 0, 0);
+                }
+                if (tv_status_label) {
+                    lv_label_set_text(tv_status_label, "BACK");
+                    lv_obj_set_style_text_color(tv_status_label, lv_color_hex(0xFF5555), 0);
+                    tv_feedback_ticks = 6;
                 }
             }
         }
@@ -7547,10 +7656,14 @@ void CustomApp_HijackButtons(Button& boot_button, std::function<void()> on_ai_si
             current_ui_mode = 2;
             ui_mode_changed = true;
         } else if (current_system_mode == 5) {
-            // 【修正】在 App 執行中長按：退回 App 選單 (4)
-            current_system_mode = 4;
-            current_ui_mode = 4;
-            ui_mode_changed = true;
+            if (app_menu_selection == APP_TV_REMOTE) {
+                // AtomS3R 在 TV Remote 裡長按：切換 第1頁 <-> 第2頁
+                pending_game_action = 8;
+            } else {
+                current_system_mode = 4;
+                current_ui_mode = 4;
+                ui_mode_changed = true;
+            }
         } else if (current_system_mode == 2) {
             // 【修正】在 Game 執行中長按：退回 Game 選單 (1)
             current_system_mode = 1;
