@@ -59,8 +59,11 @@ static bool clock_is_bright = false;   // 目前是否為高亮狀態
 static int clock_dim_countdown = 0;    // 倒數計時器 (每 100ms 扣 1)
 const int CLOCK_DIM_TIMEOUT_SEC = 10;  // 亮起後等待幾秒自動變暗 (可自行改成 3 或 5 秒)
 int current_dim_brightness = 5;
-int current_auto_clock_sec = 180;  // 自動進時間模式秒數 (預設 3 分鐘，0 = 關閉)
-bool current_clock_24h = false;    // 時鐘格式 (false: 12H, true: 24H)
+int current_auto_clock_sec = 180;          // 自動進時間模式秒數 (預設 3 分鐘，0 = 關閉)
+bool current_clock_24h = false;            // 時鐘格式 (false: 12H, true: 24H)
+std::string current_rotate_mode = "auto";  // "auto", "portrait", "landscape"
+int current_tv_tilt_threshold = 1500;      // 電視體感傾斜門檻
+int current_tv_zero_offset = 0;            // 電視體感水平零點微調
 #define BRIGHTNESS_DIM current_dim_brightness
 int current_max_brightness = 100;
 
@@ -4318,14 +4321,27 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                 const int16_t FLIP_THRESHOLD = 5000;
                 lv_display_rotation_t target_rot = current_rot;
 
-                if (accel_y < -FLIP_THRESHOLD) {
+                if (current_rotate_mode == "portrait") {
                     target_rot = LV_DISPLAY_ROTATION_0;
-                } else if (accel_y > FLIP_THRESHOLD) {
-                    target_rot = LV_DISPLAY_ROTATION_180;
-                } else if (accel_x > FLIP_THRESHOLD) {
-                    target_rot = LV_DISPLAY_ROTATION_90;
-                } else if (accel_x < -FLIP_THRESHOLD) {
-                    target_rot = LV_DISPLAY_ROTATION_270;
+                } else if (current_rotate_mode == "landscape") {
+                    if (accel_x > FLIP_THRESHOLD) {
+                        target_rot = LV_DISPLAY_ROTATION_90;
+                    } else if (accel_x < -FLIP_THRESHOLD) {
+                        target_rot = LV_DISPLAY_ROTATION_270;
+                    } else if (current_rot != LV_DISPLAY_ROTATION_90 &&
+                               current_rot != LV_DISPLAY_ROTATION_270) {
+                        target_rot = LV_DISPLAY_ROTATION_90;
+                    }
+                } else {
+                    if (accel_y < -FLIP_THRESHOLD) {
+                        target_rot = LV_DISPLAY_ROTATION_0;
+                    } else if (accel_y > FLIP_THRESHOLD) {
+                        target_rot = LV_DISPLAY_ROTATION_180;
+                    } else if (accel_x > FLIP_THRESHOLD) {
+                        target_rot = LV_DISPLAY_ROTATION_90;
+                    } else if (accel_x < -FLIP_THRESHOLD) {
+                        target_rot = LV_DISPLAY_ROTATION_270;
+                    }
                 }
 
                 if (target_rot != current_rot) {
@@ -4585,9 +4601,9 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
         clock_dim_countdown = 100;
         idle_to_clock_counter = 0;
 
-        static int tv_vol_cooldown = 0;
-        if (tv_vol_cooldown > 0)
-            tv_vol_cooldown--;
+        static int vol_cooldown = 0;
+        if (vol_cooldown > 0)
+            vol_cooldown--;
         if (tv_feedback_ticks > 0) {
             tv_feedback_ticks--;
             if (tv_feedback_ticks == 0 && current_ui_mode == 5 && tv_status_label) {
@@ -4596,9 +4612,13 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
             }
         }
 
-        const int16_t TILT_THRESHOLD = 1500;
-        if (tv_vol_cooldown == 0) {
-            if (global_accel_x > TILT_THRESHOLD) {
+        int16_t adj_accel_x = global_accel_x - current_tv_zero_offset;
+        int16_t tilt_thresh = current_tv_tilt_threshold;
+        if (tilt_thresh < 400)
+            tilt_thresh = 400;
+
+        if (vol_cooldown == 0) {
+            if (adj_accel_x > tilt_thresh) {
                 if (global_mqtt_client) {
                     esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/volume", "UP", 2, 0, 0);
                 }
@@ -4610,8 +4630,8 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                     lv_obj_set_style_text_color(tv_status_label, lv_color_hex(0x00FF66), 0);
                     tv_feedback_ticks = 6;
                 }
-                tv_vol_cooldown = 5;
-            } else if (global_accel_x < -TILT_THRESHOLD) {
+                vol_cooldown = 5;
+            } else if (adj_accel_x < -tilt_thresh) {
                 if (global_mqtt_client) {
                     esp_mqtt_client_publish(global_mqtt_client, "xiaozhi/tv/volume", "DOWN", 4, 0,
                                             0);
@@ -4624,11 +4644,11 @@ static void custom_app_timer_cb(lv_timer_t* timer) {
                     lv_obj_set_style_text_color(tv_status_label, lv_color_make(0, 255, 255), 0);
                     tv_feedback_ticks = 6;
                 }
-                tv_vol_cooldown = 5;
+                vol_cooldown = 5;
             }
         }
 
-        if (current_ui_mode == 7 && abs(global_accel_x) < 800) {
+        if (current_ui_mode == 7 && abs(adj_accel_x) < (tilt_thresh / 2)) {
             if (current_active_emotion != "cool")
                 pending_emotion_cmd = "cool";
         }
@@ -5959,6 +5979,17 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
                                             ? cJSON_GetObjectItem(json, "avatar_color")->valueint
                                             : 1;
                         cJSON* active_theme_item = cJSON_GetObjectItem(json, "active_theme");
+                        cJSON* rot_item = cJSON_GetObjectItem(json, "rotate_mode");
+                        std::string rot_mode = (rot_item && rot_item->valuestring)
+                                                   ? rot_item->valuestring
+                                                   : current_rotate_mode;
+                        int tv_thresh =
+                            cJSON_GetObjectItem(json, "tv_tilt_threshold")
+                                ? cJSON_GetObjectItem(json, "tv_tilt_threshold")->valueint
+                                : current_tv_tilt_threshold;
+                        int tv_zero = cJSON_GetObjectItem(json, "tv_zero_offset")
+                                          ? cJSON_GetObjectItem(json, "tv_zero_offset")->valueint
+                                          : current_tv_zero_offset;
                         const char* theme_str = "dark";
                         if (active_theme_item && active_theme_item->valuestring) {
                             theme_str = active_theme_item->valuestring;
@@ -5984,8 +6015,8 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
 
                         // 安排在主執行緒中更新 UI 與硬體
                         Application::GetInstance().Schedule([vol, bright, dim_b, auto_clk, is_24h,
-                                                             color_idx,
-                                                             theme_str_copy = safe_theme]() {
+                                                             color_idx, theme_str_copy = safe_theme,
+                                                             rot_mode, tv_thresh, tv_zero]() {
                             auto codec = Board::GetInstance().GetAudioCodec();
                             if (codec)
                                 codec->SetOutputVolume(vol);
@@ -5995,6 +6026,9 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
                             current_dim_brightness = dim_b;
                             current_auto_clock_sec = auto_clk;
                             current_clock_24h = is_24h;
+                            current_rotate_mode = rot_mode;
+                            current_tv_tilt_threshold = tv_thresh;
+                            current_tv_zero_offset = tv_zero;
 
                             auto backlight = Board::GetInstance().GetBacklight();
                             if (backlight) {
@@ -6194,6 +6228,18 @@ static void mqtt_init_task(void* pvParameters) {
                                     ? cJSON_GetObjectItem(json, "avatar_color")->valueint
                                     : 1;
                             cJSON* active_theme_item = cJSON_GetObjectItem(json, "active_theme");
+                            cJSON* rot_item = cJSON_GetObjectItem(json, "rotate_mode");
+                            std::string rot_mode = (rot_item && rot_item->valuestring)
+                                                       ? rot_item->valuestring
+                                                       : current_rotate_mode;
+                            int tv_thresh =
+                                cJSON_GetObjectItem(json, "tv_tilt_threshold")
+                                    ? cJSON_GetObjectItem(json, "tv_tilt_threshold")->valueint
+                                    : current_tv_tilt_threshold;
+                            int tv_zero =
+                                cJSON_GetObjectItem(json, "tv_zero_offset")
+                                    ? cJSON_GetObjectItem(json, "tv_zero_offset")->valueint
+                                    : current_tv_zero_offset;
                             const char* theme_str = "dark";
                             if (active_theme_item && active_theme_item->valuestring) {
                                 theme_str = active_theme_item->valuestring;
@@ -6208,12 +6254,15 @@ static void mqtt_init_task(void* pvParameters) {
                                      theme_str ? theme_str : "dark", color_idx);
 
                             Application::GetInstance().Schedule(
-                                [vol, bright, dim_b, auto_clk, is_24h, color_idx,
-                                 theme_str_copy = std::string(theme_str)]() {
+                                [vol, bright, dim_b, auto_clk, is_24h, color_idx, rot_mode,
+                                 tv_thresh, tv_zero, theme_str_copy = std::string(theme_str)]() {
                                     current_max_brightness = bright;
                                     current_dim_brightness = dim_b;
                                     current_auto_clock_sec = auto_clk;
                                     current_clock_24h = is_24h;
+                                    current_rotate_mode = rot_mode;
+                                    current_tv_tilt_threshold = tv_thresh;
+                                    current_tv_zero_offset = tv_zero;
 
                                     auto codec = Board::GetInstance().GetAudioCodec();
                                     if (codec)
