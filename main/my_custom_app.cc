@@ -731,28 +731,28 @@ static void update_weather_icon_ui(const char* desc) {
 static void apply_avatar_color(int color_idx) {
     switch (color_idx) {
         case 1:
-            avatar_theme_color = lv_color_hex(0xFF00BCD4);
+            avatar_theme_color = lv_color_hex(0xFF00D6F5);
             break;  // 科技藍
         case 2:
             avatar_theme_color = lv_color_hex(0xFFFF9800);
             break;  // 活力橘
         case 3:
-            avatar_theme_color = lv_color_hex(0xFFF06292);
+            avatar_theme_color = lv_color_hex(0xFFFF84A1);
             break;  // 櫻花粉
         case 4:
-            avatar_theme_color = lv_color_hex(0xFF00E676);
+            avatar_theme_color = lv_color_hex(0xFF8CE600);
             break;  // 螢光綠
         case 5:
-            avatar_theme_color = lv_color_hex(0xFFFFEB3B);
+            avatar_theme_color = lv_color_hex(0xFFFFCD1E);
             break;  // 閃電黃
         case 6:
-            avatar_theme_color = lv_color_hex(0xFF7C4DFF);
+            avatar_theme_color = lv_color_hex(0xFF9264FD);
             break;  // 魅惑紫
         case 7:
-            avatar_theme_color = lv_color_hex(0xFFFF3D00);
+            avatar_theme_color = lv_color_hex(0xFFFF5823);
             break;  // 憤怒紅
         default:
-            avatar_theme_color = lv_color_hex(0xFF42A5F5);
+            avatar_theme_color = lv_color_hex(0xFF50ADFF);
             break;
     }
 
