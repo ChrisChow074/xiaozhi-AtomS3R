@@ -727,6 +727,37 @@ static void update_weather_icon_ui(const char* desc) {
     }
 }
 
+static void sync_avatar_bg_color() {
+    lv_obj_t* scr = lv_scr_act();
+    if (!scr)
+        return;
+
+    // 取得小智底層背景 container_ (LcdDisplay::SetupUI 第一個建立的子物件)
+    lv_obj_t* sys_bg = lv_obj_get_child(scr, 0);
+    if (!sys_bg || sys_bg == face_container)
+        return;
+
+    lv_color_t real_bg = lv_obj_get_style_bg_color(sys_bg, LV_PART_MAIN);
+    if (real_bg.red == avatar_theme_bg_color.red && real_bg.green == avatar_theme_bg_color.green &&
+        real_bg.blue == avatar_theme_bg_color.blue) {
+        return;  // 顏色沒變就不用重畫
+    }
+
+    avatar_theme_bg_color = real_bg;
+
+    // 同步更新 sad / angry / cool 所有遮罩方塊顏色
+    lv_obj_t* mask_groups[] = {avatar_sad_eye, avatar_angry_eye, avatar_cool};
+    for (int g = 0; g < 3; g++) {
+        if (mask_groups[g]) {
+            uint32_t cnt = lv_obj_get_child_cnt(mask_groups[g]);
+            for (uint32_t i = 0; i < cnt; i++) {
+                lv_obj_set_style_bg_color(lv_obj_get_child(mask_groups[g], i),
+                                          avatar_theme_bg_color, 0);
+            }
+        }
+    }
+}
+
 // 👇 新增：動態顏色套用函數
 static void apply_avatar_color(int color_idx) {
     switch (color_idx) {
@@ -789,7 +820,7 @@ static void apply_avatar_color(int color_idx) {
         lv_obj_set_style_bg_color(lv_obj_get_child(avatar_sweat, 1), avatar_theme_color, 0);
         lv_obj_set_style_bg_color(lv_obj_get_child(avatar_sweat, 2), avatar_theme_color, 0);
     }
-
+    sync_avatar_bg_color();
     ui_mode_changed = true;
 }
 
@@ -8381,6 +8412,7 @@ void CustomApp_SetEmotion(const char* emotion) {
     if (avatar_swallow)
         lv_anim_del(avatar_swallow, NULL);
 
+    sync_avatar_bg_color();
     // 2. 立刻強制拉回基準座標與大小，消除上一個表情或被打斷動畫的殘留位移！
     reset_avatar_geometry();
 
